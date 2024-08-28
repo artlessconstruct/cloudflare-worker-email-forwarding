@@ -60,29 +60,38 @@ export default {
         fail = mapped?.split(';').at(1) || fail;
 
         // Validate "local-part" [RFC] against configuration.
-        let valid = !!mapped || '*' === users || users.replace(/\s+/g, '').split(',').includes(user);
+        // First validate the user
+        let valid = mapped !== null || '*' === users || users.replace(/\s+/g, '').split(',').includes(user);
+        // If valid then validate the subaddress if it exists
         if (valid && sub) {
             valid = '*' === subs || subs.replace(/\s+/g, '').split(',').includes(sub);
         }
         
-        //
+        // Forward normally if the the user is valid and there is corresponding
+        // destination
         if (valid && dest) {
+            // Prepend the user to the destination if it starts with an '@'
             if (dest.startsWith('@')) {
                 dest = user + dest;
             }
-            
+            // Fowward with custom header set to 'PASS'
             await message.forward(dest, new Headers({
                 [header]: 'PASS'
             }));
+        // Otherwise do not forward
         } else {
+            // Prepend user to the failure response if it starts with a
+            // non-alphanumeric
             if (/^[^A-Z0-9]/i.test(fail)) {
                 fail = user + fail;
             }
-            
+            // If failure response includes a '@' then forward to the failure
+            // address with custom header set to 'FAIL'
             if (fail.includes('@')) {
                 await message.forward(fail, new Headers({
                     [header]: 'FAIL'
                 }));
+            // Otherwise reject the message altogether
             } else {
                 message.setReject(fail);
             }
