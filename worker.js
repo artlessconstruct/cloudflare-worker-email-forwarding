@@ -1,5 +1,8 @@
 /**
- * A Cloudflare email worker providing configurable email subaddressing [RFC 5233]
+ * A Cloudflare Email Worker which can be configured with routes to forward 
+ * from an address using subaddressing (o.k.a. subaddress extension [RFC 5233];
+ * a.k.a. detailed addressing, plus addresses, tagged addresses, mail
+ * extension, etc.) to one or more destination addresses
  *
  * Copyright (C) 2024 Jeremy Harnois
  *
@@ -36,64 +39,70 @@ export const DEFAULTS = {
 
 //
 export default {
-    async email(message, environment, context, { implementation = (lp,scs) => lp.split(scs,2) } = {}) {
+    async email(message, environment, context, { implementation = (localPart, separator) => localPart.split(separator, 2) } = {}) {
         // Environment-based configs fallback to `DEFAULTS`.
         const { USERS, SUBADDRESSES, DESTINATION, SEPARATOR, FAILURE, HEADER, MAP } = { ...DEFAULTS, ...environment }
-        
+
         // KV-based global configs override environment-based configs (and
         // defaults) when present.
         const users = await MAP.get('@USERS') || USERS;
-        let subs = await MAP.get('@SUBADDRESSES') || SUBADDRESSES;
-        let dest = await MAP.get('@DESTINATION') || DESTINATION;
-        let fail = await MAP.get('@FAILURE') || FAILURE;
+        let subaddresses = await MAP.get('@SUBADDRESSES') || SUBADDRESSES;
+        let destination = await MAP.get('@DESTINATION') || DESTINATION;
+        let failure = await MAP.get('@FAILURE') || FAILURE;
         const header = await MAP.get('@HEADER') || HEADER;
         const separator = await MAP.get('@SEPARATOR') || SEPARATOR;
-        
+
         // Implement "separator character sequence" against "local-part" [RFC].
-        const [ user, sub ] = implementation(message.to.split('@')[0], separator);
-        
+        const [user, subaddress] = implementation(message.to.split('@')[0], separator);
+
         // KV-based user configs override KV-based global configs when present,
         // which override environment-based configs (and defaults) when present. 
-        const mapped = await MAP.get(user);
-        subs = await MAP.get(`${user}${separator}`) || subs;
-        dest = mapped?.split(';').at(0) || dest;
-        fail = mapped?.split(';').at(1) || fail;
+        const mappedUser = await MAP.get(user);
+        subaddresses = await MAP.get(`${user}${separator}`) || subaddresses;
+        // Decompose mappedUser which is expected to be in the format 'destination;failure'
+        destination = mappedUser?.split(';').at(0) || destination;
+        failure = mappedUser?.split(';').at(1) || failure;
 
         // Validate "local-part" [RFC] against configuration.
         // First validate the user
-        let valid = mapped !== null || '*' === users || users.replace(/\s+/g, '').split(',').includes(user);
+        let isValid = mappedUser !== null || '*' === users || users.replace(/\s+/g, '').split(',').includes(user);
         // If valid then validate the subaddress if it exists
-        if (valid && sub) {
-            valid = '*' === subs || subs.replace(/\s+/g, '').split(',').includes(sub);
+        if (isValid && subaddress) {
+            isValid = '*' === subaddresses || subaddresses.replace(/\s+/g, '').split(',').includes(subaddress);
         }
-        
-        // Forward normally if the the user is valid and there is corresponding
-        // destination
-        if (valid && dest) {
-            // Prepend the user to the destination if it starts with an '@'
-            if (dest.startsWith('@')) {
-                dest = user + dest;
+
+        // Forward normally if the the user is valid and there is a
+        // corresponding valid destination for the user
+        if (isValid && destination) {
+            // Forward to each ':' separated recipient contained in destination
+            const destinations = destination.split(':');
+            for (let d = 0; d < destinations.length; d++) {
+                // Prepend the user to the destination if it starts with an '@'
+                if (destinations[d].startsWith('@')) {
+                    destinations[d] = user + destinations[d];
+                }
+                // Forward with custom header set to 'PASS'
+                await message.forward(destinations[d], new Headers({
+                    [header]: 'PASS'
+                }));
             }
-            // Fowward with custom header set to 'PASS'
-            await message.forward(dest, new Headers({
-                [header]: 'PASS'
-            }));
-        // Otherwise do not forward
         } else {
+            // Otherwise effect the failure response
+
             // Prepend user to the failure response if it starts with a
             // non-alphanumeric
-            if (/^[^A-Z0-9]/i.test(fail)) {
-                fail = user + fail;
+            if (/^[^A-Z0-9]/i.test(failure)) {
+                failure = user + failure;
             }
             // If failure response includes a '@' then forward to the failure
             // address with custom header set to 'FAIL'
-            if (fail.includes('@')) {
-                await message.forward(fail, new Headers({
+            if (failure.includes('@')) {
+                await message.forward(failure, new Headers({
                     [header]: 'FAIL'
                 }));
-            // Otherwise reject the message altogether
             } else {
-                message.setReject(fail);
+                // Otherwise reject the message altogether
+                message.setReject(failure);
             }
         }
     }
