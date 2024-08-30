@@ -25,57 +25,78 @@
  * SOFTWARE.
  */
 
-//
 export const DEFAULTS = {
-    USERS: "",
-    SUBADDRESSES: "*",
+    // Can be overridden by KV-based global configuration
     DESTINATION: "",
-    SEPARATOR: "+",
-    FAILURE: "Invalid recipient",
+    FAILURE_TREATMENT: "Invalid recipient",
+    SUBADDRESSES: "*",
+    USERS: "",
+    // Cannot be overridden by KV-based global configuration
+    ADDRESS_SEPARATOR: ",",
+    FAILURE_SEPARATOR: ";",
     HEADER: "X-My-Email-Subaddressing",
-    // Cloudflare KV
+    LOCAL_PART_SEPARATOR: "+",
+    // Cloudflare KV key-value store
     MAP: new Map()
 };
 
-//
 export default {
-    async email(message, environment, context, { implementation = (localPart, separator) => localPart.split(separator, 2) } = {}) {
-        // Environment-based configs fallback to `DEFAULTS`.
-        const { USERS, SUBADDRESSES, DESTINATION, SEPARATOR, FAILURE, HEADER, MAP } = { ...DEFAULTS, ...environment }
+    async email(message, environment, context,
+        // Returns the local and domain part
+        { addressLocalParts = (localPart, localPartSeparator) => localPart.split(localPartSeparator, 2) } = {}) {
+        // Environment-based configuration falls back to `DEFAULTS`.
+        const {
+            DESTINATION,
+            FAILURE_TREATMENT,
+            SUBADDRESSES,
+            USERS,
+            ADDRESS_SEPARATOR,
+            FAILURE_SEPARATOR,
+            HEADER,
+            LOCAL_PART_SEPARATOR,
+            MAP
+        } = { ...DEFAULTS, ...environment };
 
-        // KV-based global configs override environment-based configs (and
-        // defaults) when present.
-        const users = await MAP.get('@USERS') || USERS;
-        let subaddresses = await MAP.get('@SUBADDRESSES') || SUBADDRESSES;
-        let destination = await MAP.get('@DESTINATION') || DESTINATION;
-        let failure = await MAP.get('@FAILURE') || FAILURE;
-        const header = await MAP.get('@HEADER') || HEADER;
-        const separator = await MAP.get('@SEPARATOR') || SEPARATOR;
+        // KV-based configuration overrides environment-based configuration (and
+        // defaults) when present for the following variables only
+        const users = (await MAP.get('@USERS') || USERS)?.replace(/\s+/g, '');
+        let subaddresses = (await MAP.get('@SUBADDRESSES') || SUBADDRESSES)?.replace(/\s+/g, '');
+        let destination = (await MAP.get('@DESTINATION') || DESTINATION)?.replace(/\s+/g, '');
+        let failureTreatment = await MAP.get('@FAILURE_TREATMENT') || FAILURE_TREATMENT;
 
-        // Implement "separator character sequence" against "local-part" [RFC].
-        const [user, subaddress] = implementation(message.to.split('@')[0], separator);
+        // Given from RFC 5233 that the email address has the syntax:
+        //     `${LocalPart}@${Domain}`
+        // and LocalPart has the syntax
+        //     `${user}${LOCAL_PART_SEPARATOR}${subaddress}`
+        // obtain the LocalPart first by splitting the message's 'to'
+        // address using separator '@' and then use the addressLocalParts
+        // function to split this again into User and Subaddress using the
+        // configured LOCAL_PART_SEPARATOR
+        const [user, subaddress] = addressLocalParts(message.to.split('@')[0], LOCAL_PART_SEPARATOR);
 
-        // KV-based user configs override KV-based global configs when present,
-        // which override environment-based configs (and defaults) when present. 
-        const mappedUser = await MAP.get(user);
-        subaddresses = await MAP.get(`${user}${separator}`) || subaddresses;
-        // Decompose mappedUser which is expected to be in the format 'destination;failure'
-        destination = mappedUser?.split(';').at(0) || destination;
-        failure = mappedUser?.split(';').at(1) || failure;
+        // KV-based user configuration overrides KV-based global configuration when present,
+        // which overrides environment-based configuration (and defaults) when present.
+        const userDestinationAndFailureTreatment = (await MAP.get(user))?.replace(/\s+/g, '');
+        subaddresses = (await MAP.get(`${user}${LOCAL_PART_SEPARATOR}`))?.replace(/\s+/g, '') || subaddresses;
+        // Given userDestinationAndFailureTreatment has the syntax:
+        //     `${destination}${FAILURE_SEPARATOR}${failureAddressOrReason}`
+        // then split userDestinationAndFailureTreatment into destination and failureAddressOrReason
+        destination = userDestinationAndFailureTreatment?.split(FAILURE_SEPARATOR).at(0) || destination;
+        failureTreatment = userDestinationAndFailureTreatment?.split(FAILURE_SEPARATOR).at(1) || failureTreatment;
 
         // Validate "local-part" [RFC] against configuration.
         // First validate the user
-        let isValid = mappedUser !== null || '*' === users || users.replace(/\s+/g, '').split(',').includes(user);
+        let isValid = userDestinationAndFailureTreatment !== undefined || '*' === users || users.split(ADDRESS_SEPARATOR).includes(user);
         // If valid then validate the subaddress if it exists
         if (isValid && subaddress) {
-            isValid = '*' === subaddresses || subaddresses.replace(/\s+/g, '').split(',').includes(subaddress);
+            isValid = '*' === subaddresses || subaddresses?.split(ADDRESS_SEPARATOR).includes(subaddress);
         }
 
         // Forward normally if the the user is valid and there is a
         // corresponding valid destination for the user
         if (isValid && destination) {
-            // Forward to each ':' separated recipient contained in destination
-            const destinations = destination.split(':');
+            // Forward to each address contained in destination
+            const destinations = destination.split(ADDRESS_SEPARATOR);
             for (let d = 0; d < destinations.length; d++) {
                 // Prepend the user to the destination if it starts with an '@'
                 if (destinations[d].startsWith('@')) {
@@ -83,26 +104,26 @@ export default {
                 }
                 // Forward with custom header set to 'PASS'
                 await message.forward(destinations[d], new Headers({
-                    [header]: 'PASS'
+                    [HEADER]: 'PASS'
                 }));
             }
         } else {
-            // Otherwise effect the failure response
+            // Otherwise fail the forward
 
-            // Prepend user to the failure response if it starts with a
+            // Prepend user to the failureAddressOrReason if it starts with a
             // non-alphanumeric
-            if (/^[^A-Z0-9]/i.test(failure)) {
-                failure = user + failure;
+            if (/^[^A-Z0-9]/i.test(failureTreatment)) {
+                failureTreatment = user + failureTreatment;
             }
-            // If failure response includes a '@' then forward to the failure
+            // If failureAddressOrReason includes a '@' then forward to the failure
             // address with custom header set to 'FAIL'
-            if (failure.includes('@')) {
-                await message.forward(failure, new Headers({
-                    [header]: 'FAIL'
+            if (failureTreatment.includes('@')) {
+                await message.forward(failureTreatment.replace(/\s+/g, ''), new Headers({
+                    [HEADER]: 'FAIL'
                 }));
             } else {
                 // Otherwise reject the message altogether
-                message.setReject(failure);
+                message.setReject(failureTreatment);
             }
         }
     }

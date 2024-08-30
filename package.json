@@ -1,13 +1,14 @@
 {
-  "name": "cloudflare-worker-email-subaddressing",
-  "description": "A Cloudflare email worker providing configurable email subaddressing (o.k.a. subaddress extension [RFC 5233]; a.k.a. detailed addressing, plus addresses, tagged addresses, mail extension, etc.)",
-  "scripts": {
-    "deploy": "wrangler deploy",
-    "dev": "echo `wrangler dev` not supported with email workers",
-    "test": "vitest"
-  },
-  "devDependencies": {
-    "vitest": "^2.0.5",
-    "wrangler": "^3.72.0"
-  }
+    "name": "cloudflare-worker-email-forwarding",
+    "description": "A Cloudflare Email Worker which can be configured with routes to forward from an address using subaddressing (A Cloudflare Email Worker which can be configured with routes to forward from an address using subaddressing (a.k.a. subaddress extension [RFC 5233], detailed addressing, plus addresses, tagged addresses, mail extension, etc.) to one or more destination addresses) to one or more destination addresses",
+    "scripts": {
+        "deploy": "wrangler deploy",
+        "dev": "echo `wrangler dev` not supported with email workers",
+        "test": "vitest"
+    },
+    "devDependencies": {
+        "@cloudflare/vitest-pool-workers": "^0.4.27",
+        "vitest": "^1.5.0",
+        "wrangler": "^3.73.0"
+    }
 }

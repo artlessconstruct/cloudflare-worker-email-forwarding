@@ -1,3 +1,5 @@
 node_modules
-.wrangler
+settings.json
+wrangler.toml
 .env
+.wrangler

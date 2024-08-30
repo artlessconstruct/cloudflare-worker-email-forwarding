@@ -1,9 +1,7 @@
 # Cloudflare Worker `email-subaddressing`
 
 _A [Cloudflare email worker][cf-email#workers] providing configurable [email
-subaddressing][wiki-ea#sa] (o.k.a. [subaddress extension][rfc-5233] [RFC 5233];
-a.k.a. detailed addressing, plus addresses, tagged addresses, mail extension,
-etc.)_
+subaddressing][wiki-ea#sa] (a.k.a. [subaddress extension] [RFC 5233], detailed addressing, plus addresses, tagged addresses, mail extension, etc.) to one or more destination addresses_
 
 [cf-email#workers]: https://developers.cloudflare.com/email-routing/email-workers/
 [rfc-5233]: https://datatracker.ietf.org/doc/html/rfc5233
@@ -28,7 +26,7 @@ is accepted, control how it is delivered, and selectively respond to failures.
 * limits subaddresses for which email is accepted (globally or per user)
 * fails with a message or fail-forwards to a destination address (globally or
   per user)
-* adds email header for filtering forwarded messages in destination email client 
+* adds email header for filtering forwarded messages in destination email client
 * allows customized subaddress separator
 * supports KV for unlimited[*](#limitations) user-to-destination combinations
   (with global fallbacks)
