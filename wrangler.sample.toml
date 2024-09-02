@@ -1,0 +1,32 @@
+name = "{YOUR_WORKER_NAME}"
+main = "worker.js"
+
+compatibility_date = "2024-08-21"
+compatibility_flags = [ "nodejs_compat" ]
+
+no_bundle = true
+workers_dev = true
+
+[vars]
+# Loading control configuraiton
+SHOULD_LOAD_KV_ADDRESS_GLOBAL_CONFIGURATION = "true"
+SHOULD_LOAD_KV_FORMAT_GLOBAL_CONFIGURATION = "true"
+SHOULD_LOAD_KV_HEADER_GLOBAL_CONFIGURATION = "true"
+SHOULD_LOAD_KV_USER_CONFIGURATION = "true"
+# Address configuration
+DESTINATION = ""
+FAILURE_TREATMENT = "Invalid recipient"
+SUBADDRESSES = "*"
+USERS = ""
+# Format configuration
+ADDRESS_SEPARATOR = ","
+FAILURE_SEPARATOR = ";"
+LOCAL_PART_SEPARATOR = "+"
+# Header configuration
+CUSTOM_HEADER = "X-My-Email-Subaddressing"
+CUSTOM_HEADER_FAIL = "fail"
+CUSTOM_HEADER_PASS = "pass"
+
+[[kv_namespaces]]
+binding = "MAP"
+id = "{YOUR_KV_NAMESPACE_ID}"

@@ -58,7 +58,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, environment, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
@@ -88,7 +88,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, environment, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
@@ -98,7 +98,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, environment, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'FAIL' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_FAIL }));
             });
         });
 
@@ -121,7 +121,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, environment, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
@@ -140,7 +140,7 @@ describe('Email Subaddressing', () => {
                 DESTINATION: 'user@email.com',
                 LOCAL_PART_SEPARATOR: '--',
                 FAILURE_TREATMENT: 'user+spam@email.com',
-                HEADER: 'X-CUSTOM'
+                CUSTOM_HEADER: 'X-CUSTOM'
             };
 
             it.each([
@@ -150,7 +150,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, environment, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [environment.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [environment.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
@@ -161,7 +161,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, environment, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [environment.HEADER]: 'FAIL' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [environment.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_FAIL }));
             });
         });
     });
@@ -180,7 +180,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, { MAP }, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
@@ -199,27 +199,29 @@ describe('Email Subaddressing', () => {
             MAP.set('@USERS', 'user1,user2');
             MAP.set('@DESTINATION', '@email.com');
             MAP.set('@FAILURE_TREATMENT', '+spam@email.com');
+            MAP.set('user3', '');
 
             it.each([
                 ['user1@domain.com', `user1${MAP.get('@DESTINATION')}`],
                 ['user1+subA@domain.com', `user1${MAP.get('@DESTINATION')}`],
                 ['user2@domain.com', `user2${MAP.get('@DESTINATION')}`],
-                ['user2+subA@domain.com', `user2${MAP.get('@DESTINATION')}`]
+                ['user2+subA@domain.com', `user2${MAP.get('@DESTINATION')}`],
+                ['user3+subA@domain.com', `user3${MAP.get('@DESTINATION')}`]
             ])('%s should forward to %s', async (to, dest) => {
                 message.to = to;
                 await worker.email(message, { MAP }, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
-                ['user3@domain.com', `user3${MAP.get('@FAILURE_TREATMENT')}`],
-                ['user3+subA@domain.com', `user3${MAP.get('@FAILURE_TREATMENT')}`]
+                ['user4@domain.com', `user4${MAP.get('@FAILURE_TREATMENT')}`],
+                ['user4+subA@domain.com', `user4${MAP.get('@FAILURE_TREATMENT')}`]
             ])('%s should forward to "%s"', async (to, dest) => {
                 message.to = to;
                 await worker.email(message, { MAP }, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'FAIL' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_FAIL }));
             });
         });
 
@@ -241,7 +243,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, { MAP }, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
@@ -253,30 +255,67 @@ describe('Email Subaddressing', () => {
                 expect(reject).toHaveBeenCalledWith(reason);
             });
         });
+        
+        describe('..., custom subaddressing separator character, custom forward header', () => {
+            const MAP = new Map();
+            MAP.set('@USERS', 'user1');
+            MAP.set('@DESTINATION', 'user@email.com');
+            MAP.set('@LOCAL_PART_SEPARATOR', '--');
+            MAP.set('@FAILURE_TREATMENT', 'user+spam@email.com');
+            MAP.set('@CUSTOM_HEADER', 'X-Custom');
+
+            it.each([
+                ['user1@domain.com', MAP.get('@DESTINATION')],
+                ['user1--subA@domain.com', MAP.get('@DESTINATION')]
+            ])('%s should forward to %s', async (to, dest) => {
+                message.to = to;
+                await worker.email(message, { MAP }, context);
+                expect(reject).not.toHaveBeenCalled();
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [MAP.get('@CUSTOM_HEADER')]: DEFAULTS.CUSTOM_HEADER_PASS }));
+            });
+
+            it.each([
+                ['user1+subA@domain.com', MAP.get('@FAILURE_TREATMENT')],
+                ['user2@domain.com', MAP.get('@FAILURE_TREATMENT')],
+                ['user2--subA@domain.com', MAP.get('@FAILURE_TREATMENT')]
+            ])('%s should forward to "%s"', async (to, dest) => {
+                message.to = to;
+                await worker.email(message, { MAP }, context);
+                expect(reject).not.toHaveBeenCalled();
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [MAP.get('@CUSTOM_HEADER')]: DEFAULTS.CUSTOM_HEADER_FAIL }));
+            });
+        });
+
     });
 
     describe('KV users', () => {
 
         describe('Multiple users, any subaddress, user destination, reject', () => {
+            const environment = {
+                DESTINATION: 'user3@email.com'
+            }
             const MAP = new Map();
             MAP.set('user1', 'user1@email.com');
             MAP.set('user2', 'user2@email.com;user2+spam@email.com');
+            MAP.set('user3', '');
 
             it.each([
                 ['user1@domain.com', MAP.get('user1').split(';')[0]],
                 ['user1+subA@domain.com', MAP.get('user1').split(';')[0]],
                 ['user2@domain.com', MAP.get('user2').split(';')[0]],
-                ['user2+subA@domain.com', MAP.get('user2').split(';')[0]]
+                ['user2+subA@domain.com', MAP.get('user2').split(';')[0]],
+                ['user3@domain.com', environment.DESTINATION],
+                ['user3+subA@domain.com', environment.DESTINATION]
             ])('%s should forward to %s', async (to, dest) => {
                 message.to = to;
-                await worker.email(message, { MAP }, context);
+                await worker.email(message, { MAP, ...environment }, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
-                ['user3@domain.com', DEFAULTS.FAILURE_TREATMENT],
-                ['user3+subA@domain.com', DEFAULTS.FAILURE_TREATMENT]
+                ['user4@domain.com', DEFAULTS.FAILURE_TREATMENT],
+                ['user4+subA@domain.com', DEFAULTS.FAILURE_TREATMENT]
             ])('%s should reject with "%s"', async (to, reason) => {
                 message.to = to;
                 await worker.email(message, { MAP }, context);
@@ -302,7 +341,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, { MAP }, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
@@ -311,7 +350,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, { MAP }, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'FAIL' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_FAIL }));
             });
 
             it.each([
@@ -335,7 +374,7 @@ describe('Email Subaddressing', () => {
                 DESTINATION: 'user1@email.com',
                 LOCAL_PART_SEPARATOR: '--',
                 FAILURE_TREATMENT: 'No such recipient',
-                HEADER: 'X-CUSTOM'
+                CUSTOM_HEADER: 'X-CUSTOM'
             };
             const MAP = new Map();
             MAP.set('@USERS', 'user2');
@@ -360,7 +399,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, { MAP, ...environment }, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [environment.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [environment.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
@@ -394,7 +433,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, { MAP }, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
@@ -413,7 +452,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, { MAP }, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
@@ -434,20 +473,7 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, { MAP }, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
-            });
-
-            it.each([
-                ['user5+subA@domain.com',
-                    MAP.get('user5').replace(/\s+/g, '').split(';')[0].split(',')[0],
-                    MAP.get('user5').replace(/\s+/g, '').split(';')[0].split(',')[1]
-                ]
-            ])('%s should forward to %s and %s', async (to, dest1, dest2) => {
-                message.to = to;
-                await worker.email(message, { MAP }, context);
-                expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
-                expect(forward).toHaveBeenCalledWith(dest2, new Headers({ [DEFAULTS.HEADER]: 'PASS' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
             });
 
             it.each([
@@ -456,8 +482,53 @@ describe('Email Subaddressing', () => {
                 message.to = to;
                 await worker.email(message, { MAP }, context);
                 expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.HEADER]: 'FAIL' }));
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_FAIL }));
             });
+
+            it.each([
+                ['user4@domain.com', MAP.get('@DESTINATION')],
+                ['user4+subA@domain.com', MAP.get('@DESTINATION')],
+                ['user4+subB@domain.com', MAP.get('@DESTINATION')]
+            ])('%s should forward to %s', async (to, dest) => {
+                message.to = to;
+                await worker.email(message, { MAP }, context);
+                expect(reject).not.toHaveBeenCalled();
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
+            });
+
+            it.each([
+                ['user4+subC@domain.com', MAP.get('@FAILURE_TREATMENT')]
+            ])('%s should reject with %s', async (to, reason) => {
+                message.to = to;
+                await worker.email(message, { MAP }, context);
+                expect(forward).not.toHaveBeenCalled();
+                expect(reject).toHaveBeenCalledWith(reason);
+            });
+
+            it.each([
+                ['user5+subA@domain.com',
+                    MAP.get('user5').split(';')[0].replace(/\s+/g, '').split(',')[0],
+                    MAP.get('user5').split(';')[0].replace(/\s+/g, '').split(',')[1]
+                ]
+            ])('%s should forward to %s and %s', async (to, dest1, dest2) => {
+                message.to = to;
+                await worker.email(message, { MAP }, context);
+                expect(reject).not.toHaveBeenCalled();
+                expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
+                expect(forward).toHaveBeenCalledWith(dest2, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_PASS }));
+            });
+
+            it.each([
+                ['user5+subC@domain.com',
+                    MAP.get('user5').split(';')[1].replace(/\s+/g, '')
+                ]
+            ])('%s should reject with %s', async (to, dest) => {
+                message.to = to;
+                await worker.email(message, { MAP }, context);
+                expect(reject).not.toHaveBeenCalled();
+                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [DEFAULTS.CUSTOM_HEADER]: DEFAULTS.CUSTOM_HEADER_FAIL }));
+            });
+
         });
     });
 });
