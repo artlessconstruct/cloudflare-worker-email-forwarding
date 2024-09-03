@@ -7,5 +7,12 @@ export default defineWorkersConfig({
                 wrangler: { configPath: "./wrangler.toml" },
             },
         },
+        watch: {
+            clearCache: true,
+            silent: true,
+            dirs: ['.'],
+            extensions: ['js'],
+            ignore: ['node_modules'],
+        },
     },
 });

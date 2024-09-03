@@ -4,11 +4,24 @@
     "scripts": {
         "deploy": "wrangler deploy",
         "dev": "echo `wrangler dev` not supported with email workers",
-        "test": "vitest"
+        "tail": "wrangler tail",
+        "test": "vitest watch",
+        "test:run": "vitest run",
+        "test:debug": "vitest run --inspect-brk --no-file-parallelism",
+        "test:log": "pnpx vitest --disable-console-intercept",
+        "test:log:rep": "vitest --disable-console-intercept",
+        "test:log:rep:basic": "vitest --reporter=basic --disable-console-intercept"
     },
     "devDependencies": {
-        "@cloudflare/vitest-pool-workers": "^0.4.27",
+        "@cloudflare/vitest-pool-workers": "^0.4.28",
         "vitest": "^1.5.0",
-        "wrangler": "^3.73.0"
+        "wrangler": "^3.74.0"
+    },
+    "dependencies": {
+        "regexp.escape": "^2.0.1"
+    },
+    "engines": {
+        "node": "18.20.4",
+        "pnpm": "8.10.2"
     }
 }
