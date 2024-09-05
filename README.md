@@ -1,4 +1,4 @@
-# Cloudflare Worker `email-subaddressing`
+# Cloudflare Worker `email-forwarding`
 
 _A [Cloudflare email worker][cf-email#workers] providing configurable [email
 subaddressing][wiki-ea#sa] (a.k.a. [subaddress extension] [RFC 5233], detailed addressing, plus addresses, tagged addresses, mail extension, etc.) to one or more destination addresses_
@@ -65,7 +65,7 @@ is accepted, control how it is delivered, and selectively respond to failures.
 4. Click the **Create Worker** button
 5. Give the worker a **Name**\
    **HINT:** Multiple email domains may require multiple email workers. A name
-   like `email-subaddressing` works for a single email domain or a single
+   like `email-forwarding` works for a single email domain or a single
    configuration shared across multiple domains, but a domain-oriented name like
    `domain-com-email` or `at-domain-com` is better suited for per-domain
    configurations.

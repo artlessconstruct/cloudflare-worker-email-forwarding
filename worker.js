@@ -26,25 +26,52 @@
  */
 import escape from 'regexp.escape';
 
+// Global helper functions to increase readability
+//
+
+String.prototype.removeWhitespace = function () {
+    return this.replace(/\s+/g, '');
+};
+
+// Fixed configuration for helper functions and for testing
+
+export const FIXED = {
+    overallFailureErrorMessagePrefix: 'Forwarding overall failure',
+
+    // Matches if it is a valid custom header, i.e.starts with 'X-'
+    validCustomHeaderRegExp: /X-.*/,
+
+    // Matches if starts with a non-alphanumeric
+
+    startsWithNonAlphanumericRegExp: /^[^A-Z0-9]/i,
+
+    // Prepends to the base with prepend if the regexp matches
+    prepend(base, prependIsRequiredRegExp, prepend) {
+        return prependIsRequiredRegExp.test(base)
+            ? prepend + base
+            : base;
+    }
+};
+
 export const DEFAULTS = {
     // Control whether different categories of stored configuration will be
     // loaded from the Cloudflare KV-based key-value store
 
     // For loading of stored BASIC configuration:
     //
+    USE_STORED_ADDRESS_CONFIGURATION: "true",
     USE_STORED_USER_CONFIGURATION: "true",
-    USE_STORED_ADDRESS_GLOBAL_CONFIGURATION: "true",
 
     // For loading of stored ADVANCED configuration:
     //
-    USE_STORED_FORMAT_GLOBAL_CONFIGURATION: "false",
-    USE_STORED_FORWARD_RETRY_GLOBAL_CONFIGURATION: "false",
-    USE_STORED_HEADER_GLOBAL_CONFIGURATION: "false",
+    USE_STORED_ERROR_MESSAGE_CONFIGURATION: "false",
+    USE_STORED_FORMAT_CONFIGURATION: "false",
+    USE_STORED_HEADER_CONFIGURATION: "false",
 
     // BASIC configuration
 
     // If USE_STORED_ADDRESS_CONFIGURATION is enabled then
-    // this stored address global configuration will be loaded
+    // this stored address configuration will be loaded
     //
     DESTINATION: "",
     REJECT_TREATMENT: ": Invalid recipient",
@@ -54,13 +81,16 @@ export const DEFAULTS = {
     // ADVANCED configuration
 
     // If USE_STORED_FORMAT_CONFIGURATION is enabled then
-    // this stored address global configuration will be loaded
+    // this stored format configuration will be loaded
     // REQUIREMENT: The three separators
-    //     - MUST all be different
-    //     - MUST not appear in your destinations or failure treatments
-    // RECOMMENDATION: The address and failure separators SHOULD be either
+    // - MUST all be different
+    // - MUST not be '*' or '@'
+    // - MUST not be any character used in a user, subaddress or destination
+    //   domain
+    // RECOMMENDATION: The address and failure separators SHOULD
+    // - be either 
     //     - a space ' ', OR
-    //     - one of the special characters '"(),:;<>@[\]'
+    //     - one of the special characters '"(),:;<>[\]'
     // which are not allowed in the unquoted local-part of an email address.
     // See [Email address - Wikipedia](https://en.wikipedia.org/wiki/Email_address#Local-part).
     // Quoted local-parts in email addresses are not supported here as it would
@@ -71,24 +101,28 @@ export const DEFAULTS = {
     FORMAT_FAILURE_SEPARATOR: ";",
     FORMAT_LOCAL_PART_SEPARATOR: "+",
     // Source: [HTML Standard](https://html.spec.whatwg.org/multipage/input.html#input.email.attrs.value.multiple)
-    FORMAT_VALID_EMAIL_ADDRESS_REGEX: "^[a-zA-Z0-9.!#$%&’*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*$",
+    FORMAT_VALID_EMAIL_ADDRESS_REGEXP: "^[a-zA-Z0-9.!#$%&’*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*$",
 
     // If USE_STORED_HEADER_CONFIGURATION is enabled then
-    // this stored address global configuration will be loaded
+    // this stored custom header configuration will be loaded
     //
-    CUSTOM_HEADER: "X-My-Email-Subaddressing",
+    CUSTOM_HEADER: "X-My-Email-Forwarding",
     CUSTOM_HEADER_FAIL: "fail",
     CUSTOM_HEADER_PASS: "pass",
 
-    // If USE_STORED_FORWARD_RETRY_GLOBAL_CONFIGURATION is enabled then
-    // this stored address global configuration will be loaded
+    // If USE_STORED_ERROR_MESSAGE_CONFIGURATION is enabled then
+    // this stored error message configuration will be loaded
     //
-    FORWARD_DESTINATION_NOT_VERIFIED_ERROR_MESSAGE: "destination address not verified",
-    FORWARD_RETRYING_MAX_RETRIES: "3",
-    FORWARD_RETRYING_TIMEOUT_MILLISECONDS: "1000",
+    UNVERIFIED_DESTINATION_ERROR_MESSAGE: "destination address not verified",
 
     // Cloudflare KV key-value store
     MAP: new Map(),
+
+    // Helper constants and methods
+    //
+
+    // Overrideable implementation methods
+    //
 
     // Returns the user and subaddress parts of the local address 
     addressLocalParts(localPart, formatLocalPartSeparator) {
@@ -100,90 +134,80 @@ export const DEFAULTS = {
 
     // Returns a description of a message 
     messageDetails(message) {
-        return `from:${message.from} to:${message.to} size:${message.rawSize}`;
+        return `{from:${message.from}, to:${message.to}, size:${message.rawSize}}`;
     },
 
-    // Forwards a message with custom headers to a set of destinations,
-    // possibly retrying maxRetries times, with retryTimeoutMilliseconds delay
-    // between retries 
-    async forwardRetrying(message, destinations, customHeaders,
-        messageDetails,
-        maxRetries, retryTimeoutMilliseconds, unverifiedDestinationErrorMessage) {
-        let retryCount = 0;
-        // Array indexed by destination indicating whether the processing for a
-        // particular destination is complete, ie. the forward succeeded OR
-        // the forward failed due to invalid configuration for that destination
-        // which means there is no reason to retry that destination
-        let destinationProcessed = new Array(destinations.length).fill(false);
-        // Count of destinations which were successfully forwarded to
-        let successfullyForwardedDestinations = [];
-        // Count of desinations where the forward request was invalid
-        let invalidDestinationsCount = 0;
-        let failingDestinationsCount = 0;
-        while (retryCount < maxRetries) {
-            failingDestinationsCount = 0;
-            const retryDetails = `retry#:(${retryCount + 1}/${maxRetries})`;
-            for (let d = 0; d < destinations.length; d++) {
-                const destination = destinations.at(d);
-                const forwardDetails = `${retryDetails} destination#:(${d + 1}/${destinations.length}) destination:${destination}`;
-                try {
-                    // Only forward if the processing has not been previously
-                    // completed
-                    if (!destinationProcessed[d]) {
-                        await message.forward(destination, customHeaders);
-                        // No error thrown so we successfully forwarded
-                        destinationProcessed[d] = true;
-                        successfullyForwardedDestinations.push(destination);
-                        console.log(`Forward succeeded on ${forwardDetails}`);
+    // Forwards a message to zero or more destinations and returns the list
+    // of destinations that were successfully forwarded to.
+    // Throws if there is failure to forward to a verified destination but
+    // only after all destinations have been attempted.
+    // Exceptions caught for unverified destinations will not trigger any
+    // exception to be propagated but may cause a message to be rejected if all
+    // other verified destinations fail (or there are none).
+    // Treating an unverified destination as a failure and throwing an
+    // exception leads to the message sender repeatedly resending the message
+    // which serves no purpose as until the destination is verified forwarding
+    // will always fail.
+    // If the forwarding request is to only one destination then the same
+    // exception caught from message.forward (EmailMessage) will be rethrown,
+    // otherwise a new overall exception will be thrown including the error
+    // messages of all failing verified destinations.
+    async forward(message, destinations, customHeaders, messageDetails, configuration) {
+        let successfulDestinations = [];
+        let failedDestinationsCount = 0;
+        let unverifiedDestinationsCount = 0;
+        let unverifiedDestinations = '';
+        let errorMessages = '';
+        for (let d = 0; d < destinations.length; d++) {
+            const destination = destinations.at(d);
+            const forwardDetails =
+                `destination#:[${d + 1}]/${destinations.length} destination:${destination}`;
+            try {
+                await message.forward(destination, customHeaders);
+                successfulDestinations.push(destination);
+                console.log(`Forwarding success on ${forwardDetails}`);
+            }
+            catch (error) {
+                const errorDetail = `${forwardDetails} email:${messageDetails} error:'${error.message}'`;
+                if (error.message === configuration.UNVERIFIED_DESTINATION_ERROR_MESSAGE) {
+                    unverifiedDestinationsCount++;
+                    unverifiedDestinations += `[${d + 1}]`;
+                    console.warn(`Forwarding destination unverified on ${errorDetail}`);
+                } else {
+                    // If there is only one destination then just rethrow
+                    if (destinations.length === 1) {
+                        throw error;
                     }
-                }
-                catch (error) {
-                    const errorDetail = `${forwardDetails} with error:'${error.message}' for email ${messageDetails}`;
-                    if (error.message === unverifiedDestinationErrorMessage) {
-                        console.warn(`Forward failed and will not be retried due to an invalid destination on ${errorDetail}`);
-                        destinationProcessed[d] = true;
-                        invalidDestinationsCount++;
-                    } else {
-                        console.error(`Forward failed on ${errorDetail}`);
-                        failingDestinationsCount++;
-                    }
+                    failedDestinationsCount++;
+                    errorMessages += `[${d + 1}]:` + error.message;
+                    console.error(`Forwarding failure on ${errorDetail}`);
                 }
             }
-            // Exit the retry loop if no destinations need retrying
-            // or the retry limit has been reached
-            if (failingDestinationsCount === 0 || retryCount === maxRetries) {
-                break;
-            }
-            retryCount++;
-            // Delay before retrying
-            await new Promise(resolve => setTimeout(resolve, retryTimeoutMilliseconds));
         }
-        if (failingDestinationsCount > 0) {
-            throw new Error(`Aborting forward after reaching limit maxRetries:${maxRetries} with successfulDestinations#:${successfullyForwardedDestinations.length} failingDestinations#:${failingDestinationsCount} invalidDestinations#:${invalidDestinationsCount} totalDestinations#:${destinations.length} for email ${messageDetails}`);
+        if (failedDestinationsCount > 0) {
+            const errorDetail =
+                `${FIXED.overallFailureErrorMessagePrefix} with totalDestinations#:${destinations.length} successfulDestinations#:${successfulDestinations.length} unverifiedDestinations#:${unverifiedDestinationsCount} failedDestinations#:${failedDestinationsCount} email:${messageDetails} unverifiedDestinations:${unverifiedDestinations} errors:'${errorMessages}'`;
+            throw new Error(errorDetail);
         }
-        return successfullyForwardedDestinations;
+        return successfulDestinations;
     },
-    isValidEmailAddress(address, validAddressRegex) {
-        return validAddressRegex.test(address);
+    isValidEmailAddress(address, validAddressRegExp) {
+        return validAddressRegExp.test(address);
     }
-}
-
-// Global helper functions to increase readability
-String.prototype.removeWhitespace = function () {
-    return this.replace(/\s+/g, '');
 };
 
 export default {
-    async email(message, environment, context
-    ) {
+    async email(message, environment, context) {
         // Environment-based configuration falls back to `DEFAULTS`.
         const {
-            // Loading control configuration
+            // Loading control for basic configuration
+            USE_STORED_ADDRESS_CONFIGURATION,
             USE_STORED_USER_CONFIGURATION,
-            USE_STORED_ADDRESS_GLOBAL_CONFIGURATION,
-            USE_STORED_FORMAT_GLOBAL_CONFIGURATION,
-            USE_STORED_FORWARD_RETRY_GLOBAL_CONFIGURATION,
-            USE_STORED_HEADER_GLOBAL_CONFIGURATION,
+
+            // Loading control for advanced configuration
+            USE_STORED_ERROR_MESSAGE_CONFIGURATION,
+            USE_STORED_FORMAT_CONFIGURATION,
+            USE_STORED_HEADER_CONFIGURATION,
 
             // Address configuration
             DESTINATION,
@@ -191,21 +215,19 @@ export default {
             SUBADDRESSES,
             USERS,
 
+            // Error message configuration
+            UNVERIFIED_DESTINATION_ERROR_MESSAGE,
+
             // Format configuration
             FORMAT_ADDRESS_SEPARATOR,
             FORMAT_FAILURE_SEPARATOR,
             FORMAT_LOCAL_PART_SEPARATOR,
-            FORMAT_VALID_EMAIL_ADDRESS_REGEX,
+            FORMAT_VALID_EMAIL_ADDRESS_REGEXP,
 
             // Header configuration
             CUSTOM_HEADER,
             CUSTOM_HEADER_FAIL,
             CUSTOM_HEADER_PASS,
-
-            // Forward retry configuration
-            FORWARD_DESTINATION_NOT_VERIFIED_ERROR_MESSAGE: FORWARD_RETRYING_UNVERIFIED_DESTINATION_ERROR_MESSAGE,
-            FORWARD_RETRYING_MAX_RETRIES,
-            FORWARD_RETRYING_TIMEOUT_MILLISECONDS,
 
             // KV map
             MAP,
@@ -213,18 +235,9 @@ export default {
             // Implementation methods
             addressLocalParts,
             messageDetails,
-            forwardRetrying,
+            forward,
             isValidEmailAddress
         } = { ...DEFAULTS, ...environment };
-
-        // Static configuration.
-        //
-        // Separates local part and absolute domain of an email address
-        const formatDomainSeparator = '@';
-        // Matches if it is a valid custom header, i.e.starts with 'X-'
-        const validCustomHeaderRegex = /X-.*/;
-        // Matches if starts with a non-alphanumeric
-        const startsWithNonAlphanumericRegex = /^[^A-Z0-9]/i;
 
         // Helper methods
         function booleanFromString(stringBoolean) {
@@ -240,24 +253,19 @@ export default {
         }
         function validatedCustomHeader(customHeader) {
             const customHeaderNoWhitespace = customHeader.removeWhitespace();
-            if (validCustomHeaderRegex.test(customHeaderNoWhitespace))
+            if (FIXED.validCustomHeaderRegExp.test(customHeaderNoWhitespace))
                 return customHeaderNoWhitespace;
             else
                 throw (`Invalid custom header ${customHeaderNoWhitespace}`);
         }
-        function prepend(base, prependIsRequiredRegex, prepend) {
-            return prependIsRequiredRegex.test(base)
-                ? prepend + base
-                : base;
-        }
         // Return an object with valid, invalid and duplicate destinations after
         // - removing all whitespace
-        // - prepend the user to the destination if it matches shouldPrependUserRegex
-        function validatedDestinations(destinations, shouldPrependUserRegex, user) {
+        // - prepend the user to the destination if it matches regexp
+        function validatedDestinations(destinations, shouldPrependUserRegExp, user) {
             return destinations.reduce((validatedDestinations, destination) => {
-                destination = prepend(destination.removeWhitespace(),
-                    shouldPrependUserRegex, user);
-                if (isValidEmailAddress(destination, formatValidEmailAddressRegex)) {
+                destination = FIXED.prepend(destination.removeWhitespace(),
+                    shouldPrependUserRegExp, user);
+                if (isValidEmailAddress(destination, formatValidEmailAddressRegExp)) {
                     if (!validatedDestinations.valid.includes(destination)) {
                         validatedDestinations.valid.push(destination);
                     } else {
@@ -282,26 +290,26 @@ export default {
             });
         }
         // Controls to load different stored configuration
+        const useStoredAddressGlobalConfiguration =
+            booleanFromString(USE_STORED_ADDRESS_CONFIGURATION);
         const useStoredUserConfiguration =
             booleanFromString(USE_STORED_USER_CONFIGURATION);
-        const useStoredAddressGlobalConfiguration =
-            booleanFromString(USE_STORED_ADDRESS_GLOBAL_CONFIGURATION);
+        const useStoredErrorMessageConfiguration =
+            booleanFromString(USE_STORED_ERROR_MESSAGE_CONFIGURATION);
         const useStoredFormatGlobalConfiguration =
-            booleanFromString(USE_STORED_FORMAT_GLOBAL_CONFIGURATION);
-        const useStoredForwardRetryingConfiguration =
-            booleanFromString(USE_STORED_FORWARD_RETRY_GLOBAL_CONFIGURATION);
+            booleanFromString(USE_STORED_FORMAT_CONFIGURATION);
         const useStoredHeaderGlobalConfiguration =
-            booleanFromString(USE_STORED_HEADER_GLOBAL_CONFIGURATION);
+            booleanFromString(USE_STORED_HEADER_CONFIGURATION);
 
         // If useStoredAddressGlobalConfiguration
-        // load stored address global configuration
+        // load stored address configuration
         // which overrides environment-based configuration (and defaults)
         const globalDestination = (
             await storedConfigurationValue(useStoredAddressGlobalConfiguration,
                 '@DESTINATION')
             ?? DESTINATION
         ).removeWhitespace();
-        const globalFailureTreatment = (
+        const globalRejectTreatment = (
             await storedConfigurationValue(useStoredAddressGlobalConfiguration,
                 '@REJECT_TREATMENT')
             ?? REJECT_TREATMENT
@@ -316,8 +324,14 @@ export default {
                 '@USERS')
             ?? USERS
         ).removeWhitespace();
+        // If useStoredErrorMessageConfiguration
+        // load stored error message configuration
+        // which overrides environment-based configuration (and defaults)
+        const unverifiedDestinationErrorMessage =
+            await storedConfigurationValue(useStoredErrorMessageConfiguration, '@UNVERIFIED_DESTINATION_ERROR_MESSAGE')
+            ?? UNVERIFIED_DESTINATION_ERROR_MESSAGE;
         // If useStoredFormatGlobalConfiguration
-        // load stored format global configuration
+        // load stored format configuration
         // which overrides environment-based configuration (and defaults)
         const formatAddressSeparator = (
             await storedConfigurationValue(useStoredFormatGlobalConfiguration,
@@ -334,13 +348,13 @@ export default {
                 '@FORMAT_LOCAL_PART_SEPARATOR')
             ?? FORMAT_LOCAL_PART_SEPARATOR
         ).removeWhitespace();
-        const formatValidEmailAddressRegex =
+        const formatValidEmailAddressRegExp =
             new RegExp(
                 await (storedConfigurationValue(useStoredFormatGlobalConfiguration,
-                    '@FORMAT_VALID_EMAIL_ADDRESS_REGEX'))
-                ?? FORMAT_VALID_EMAIL_ADDRESS_REGEX);
+                    '@FORMAT_VALID_EMAIL_ADDRESS_REGEXP'))
+                ?? FORMAT_VALID_EMAIL_ADDRESS_REGEXP);
         // If useStoredHeaderGlobalConfiguration
-        // load stored header global configuration
+        // load stored header configuration
         // which overrides environment-based configuration (and defaults)
         const customHeader =
             validatedCustomHeader(
@@ -357,116 +371,118 @@ export default {
                 '@CUSTOM_HEADER_PASS')
             ?? CUSTOM_HEADER_PASS
         ).trim();
-        // If useStoredForwardRetryingConfiguration
-        // load stored forward retry global configuration
-        // which overrides environment-based configuration (and defaults)
-        const forwardDestinationNotVerifiedErrorMessage =
-            await storedConfigurationValue(useStoredForwardRetryingConfiguration, '@FORWARD_RETRYING_UNVERIFIED_DESTINATION_ERROR_MESSAGE')
-            ?? FORWARD_RETRYING_UNVERIFIED_DESTINATION_ERROR_MESSAGE;
-        const forwardRetryingMaxRetries =
-            Number(
-                await storedConfigurationValue(useStoredForwardRetryingConfiguration, '@FORWARD_RETRYING_MAX_RETRIES')
-                ?? FORWARD_RETRYING_MAX_RETRIES);
-        const forwardRetryingTimeoutMilliseconds =
-            Number(
-                await storedConfigurationValue(useStoredForwardRetryingConfiguration, '@FORWARD_RETRYING_TIMEOUT_MILLISECONDS')
-                ?? FORWARD_RETRYING_TIMEOUT_MILLISECONDS);
 
-        // Matches if starts with formatDomainSeparator or formatLocalPartSeparator
-        const startsWithLocalPartOrDomainSeparatorRegex =
-            new RegExp(`^(${escape(formatDomainSeparator)}|${escape(formatLocalPartSeparator)})`);
+        // Derived configuration
+        const startsWithLocalPartSeparatorRegExp =
+            new RegExp(`^${escape(formatLocalPartSeparator)}`);
+        const startsWithLocalPartOrDomainSeparatorRegExp =
+            new RegExp(`^(${escape('@')}|${escape(formatLocalPartSeparator)})`);
 
         // Given from RFC 5233 that the email address has the syntax:
-        //     `${LocalPart}${formatDomainSeparator}${AbsoluteDomain}`
+        //     `${LocalPart}@${AbsoluteDomain}`
         // and LocalPart has the syntax
         //     `${user}${formatLocalPartSeparator}${subaddress}`
         // obtain the LocalPart first by splitting the message's 'to'
-        // address using separator formatDomainSeparator and then use the addressLocalParts
+        // address using separator '@' and then use the addressLocalParts
         // implementation to split this again into user and subaddress using
         // separator formatLocalPartSeparator
-        const messageLocalPart = message.to.split(formatDomainSeparator)[0];
+        const messageLocalPart = message.to.split('@')[0];
         const [messageUser, messageSubaddress] = addressLocalParts(messageLocalPart, formatLocalPartSeparator);
         const theMessageDetails = messageDetails(message);
 
         // If useStoredUserConfiguration
-        // load stored user global configuration
+        // load stored user configuration
         // which overrides environment-based configuration (and defaults)
-        const userDestinationWithFailureTreatment
+        const userDestinationWithRejectTreatment
             = await storedConfigurationValue(useStoredUserConfiguration, messageUser);
         const userSubaddresses =
             (await storedConfigurationValue(useStoredUserConfiguration, `${messageUser}${formatLocalPartSeparator}`))?.removeWhitespace()
             ?? globalSubaddresses;
+        const userRequiresSubaddress = userSubaddresses.startsWith(formatLocalPartSeparator);
+        const userConcreteSubaddresses = userSubaddresses.replace(startsWithLocalPartSeparatorRegExp, '');
 
-        // Given userDestinationWithFailureTreatment has the syntax:
-        //     `${destination}${formatFailureSeparator}${failureTreatment}`
-        // then split userDestinationWithFailureTreatment into destination and failureTreatment
+        // Given userDestinationWithRejectTreatment has the syntax:
+        //     `${destination}${formatFailureSeparator}${rejectTreatment}`
+        // then split userDestinationWithRejectTreatment into destination and rejectTreatment.
+        // Empty strings indicate that the global configuration should be used
+        // so the '||' operator is used to achieve this.
         const userDestination =
-            userDestinationWithFailureTreatment?.split(formatFailureSeparator).at(0).removeWhitespace()
+            userDestinationWithRejectTreatment?.split(formatFailureSeparator).at(0).removeWhitespace()
             || globalDestination;
-        const userFailureTreatment =
-            userDestinationWithFailureTreatment?.split(formatFailureSeparator).at(1)?.trim()
-            || globalFailureTreatment;
+        const userRejectTreatment =
+            userDestinationWithRejectTreatment?.split(formatFailureSeparator).at(1)?.trim()
+            || globalRejectTreatment;
 
-        // Validate the messageUser
-        const userIsAllowed =
-            userDestinationWithFailureTreatment !== undefined
+        // The message user is allowed if:
+        // - the specific message user was found in the user store, or
+        // - the global user configuration is a wildcard, or
+        // - the message user is in the set of allowed global users
+        const messageUserIsAllowed =
+            userDestinationWithRejectTreatment !== undefined
             || globalUsers === '*'
             || globalUsers.split(formatAddressSeparator).includes(messageUser);
-        // Validate messageSubaddress 
-        const subaddressIsAllowed =
+        // The subaddress is allowed if:
+        // - the message user either
+        //     - has no subaddress and users do not require one, or
+        //     - has a subaddress and the subaddress configuration is either
+        //       a wildcard or the user in the set of allowed subaddresses 
+        const messageSubaddressIsAllowed =
             messageSubaddress === ''
-                ? !/^\+/.test(userSubaddresses)
-                : ['*', '+*'].includes(userSubaddresses)
-                || userSubaddresses.replace(/^\+/, '').split(formatAddressSeparator).includes(messageSubaddress);
+                ? !userRequiresSubaddress
+                : userConcreteSubaddresses === '*'
+                || userConcreteSubaddresses
+                    .split(formatAddressSeparator).includes(messageSubaddress);
 
-        // Accept forward if the the user and subaddress are valid
-        let successfulAcceptDestinations = [];
-        if (userIsAllowed && subaddressIsAllowed) {
+        // Accept forward if the the message user and subaddress are allowed
+        let acceptForwardWasSuccessful = false;
+        if (messageUserIsAllowed && messageSubaddressIsAllowed) {
             const validatedAcceptDestinations =
-                validatedDestinations(userDestination.split(formatAddressSeparator), startsWithLocalPartOrDomainSeparatorRegex, messageUser);
+                validatedDestinations(userDestination.split(formatAddressSeparator), startsWithLocalPartOrDomainSeparatorRegExp, messageUser);
             warnAboutBadDestinations(validatedAcceptDestinations, 'accept forward');
             console.info(
                 `Accept forwarding to destinations:'${validatedAcceptDestinations.valid.join(formatAddressSeparator)}'`);
             // Forward with custom header set to customHeaderPass
-            successfulAcceptDestinations =
-                await forwardRetrying(
+            acceptForwardWasSuccessful = (
+                await forward(
                     message,
                     validatedAcceptDestinations.valid,
                     new Headers({ [customHeader]: customHeaderPass }),
                     theMessageDetails,
-                    forwardRetryingMaxRetries,
-                    forwardRetryingTimeoutMilliseconds,
-                    forwardDestinationNotVerifiedErrorMessage
-                );
+                    { UNVERIFIED_DESTINATION_ERROR_MESSAGE: unverifiedDestinationErrorMessage }
+                )).length > 0;
         }
 
         // If no accept forwards succeeded then reject forward
-        if (successfulAcceptDestinations.length === 0) {
+        if (!acceptForwardWasSuccessful) {
             const validatedRejectDestinations =
-                validatedDestinations(userFailureTreatment.split(formatAddressSeparator), startsWithLocalPartOrDomainSeparatorRegex, messageUser);
-            let successfulRejectDestinations = [];
+                validatedDestinations(userRejectTreatment.split(formatAddressSeparator), startsWithLocalPartOrDomainSeparatorRegExp, messageUser);
+            let rejectForwardWasSuccessful = false;
             // Reject forward if there are some valid reject forward destinations
             if (validatedRejectDestinations.valid.length > 0) {
                 warnAboutBadDestinations(validatedRejectDestinations, 'reject forward');
                 console.info(
                     `Reject forwarding to destinations:'${validatedRejectDestinations.valid.join(formatAddressSeparator)}'`);
-                successfulRejectDestinations = await forwardRetrying(
-                    message,
-                    validatedRejectDestinations.valid,
-                    new Headers({ [customHeader]: customHeaderFail }),
-                    theMessageDetails,
-                    forwardRetryingMaxRetries,
-                    forwardRetryingTimeoutMilliseconds,
-                    forwardDestinationNotVerifiedErrorMessage
-                );
+                rejectForwardWasSuccessful =
+                    (await forward(
+                        message,
+                        validatedRejectDestinations.valid,
+                        new Headers({ [customHeader]: customHeaderFail }),
+                        theMessageDetails,
+                        { UNVERIFIED_DESTINATION_ERROR_MESSAGE: unverifiedDestinationErrorMessage }
+                    )).length > 0;
             }
 
-            // If no reject forwards succeeded then direct reject
-            if (successfulRejectDestinations.length === 0) {
-                const failureReason =
-                    prepend(userFailureTreatment, startsWithNonAlphanumericRegex, messageLocalPart);
-                console.info(`Direct rejecting with failureReason:'${failureReason}' for email ${theMessageDetails}`);
-                message.setReject(failureReason);
+            // If no reject forwards succeeded or were attempted then direct reject
+            if (!rejectForwardWasSuccessful) {
+                const userRejectReason =
+                    !userRejectTreatment.includes('@') && userRejectTreatment
+                    || !globalRejectTreatment.includes('@') && globalRejectTreatment
+                    || !REJECT_TREATMENT.includes('@') && REJECT_TREATMENT.trim()
+                    || DEFAULTS.REJECT_TREATMENT.trim();
+                const expandedRejectReason = FIXED.prepend(
+                    userRejectReason, FIXED.startsWithNonAlphanumericRegExp, messageLocalPart);
+                console.info(`Direct rejecting with failureReason:'${expandedRejectReason}'`);
+                message.setReject(expandedRejectReason);
             }
         }
     }

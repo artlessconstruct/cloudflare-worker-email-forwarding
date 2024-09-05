@@ -8,29 +8,29 @@ no_bundle = true
 workers_dev = true
 
 [vars]
-# Loading control configuraiton
+# Loading control for basic configuration
+USE_STORED_ADDRESS_CONFIGURATION = "true"
 USE_STORED_USER_CONFIGURATION = "true"
-USE_STORED_ADDRESS_GLOBAL_CONFIGURATION = "true"
-USE_STORED_FORMAT_GLOBAL_CONFIGURATION = "false"
-USE_STORED_FORWARD_RETRY_GLOBAL_CONFIGURATION = "false"
-USE_STORED_HEADER_GLOBAL_CONFIGURATION = "false"
+# Loading control for advanced configuration
+USE_STORED_ERROR_MESSAGE_CONFIGURATION = "false"
+USE_STORED_FORMAT_CONFIGURATION = "false"
+USE_STORED_HEADER_CONFIGURATION = "false"
 # Address configuration
 DESTINATION = ""
 REJECT_TREATMENT = ": Invalid recipient"
 SUBADDRESSES = "*"
 USERS = ""
+# Error message configuration
+UNVERIFIED_DESTINATION_ERROR_MESSAGE = "destination address not verified"
 # Format configuration
 FORMAT_ADDRESS_SEPARATOR = ","
 FORMAT_FAILURE_SEPARATOR = ";"
 FORMAT_LOCAL_PART_SEPARATOR = "+"
+FORMAT_VALID_EMAIL_ADDRESS_REGEXP = "^[a-zA-Z0-9.!#$%&’*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*$"
 # Header configuration
-CUSTOM_HEADER = "X-My-Email-Subaddressing"
+CUSTOM_HEADER = "X-My-Email-Forwarding"
 CUSTOM_HEADER_FAIL = "fail"
 CUSTOM_HEADER_PASS = "pass"
-# Forward retrying configuration
-FORWARD_DESTINATION_NOT_VERIFIED_ERROR_MESSAGE = "destination address not verified"
-FORWARD_RETRYING_MAX_RETRIES = "1"
-FORWARD_RETRYING_TIMEOUT_MILLISECONDS = "1000"
 
 [[kv_namespaces]]
 binding = "MAP"
