@@ -8,13 +8,9 @@ no_bundle = true
 workers_dev = true
 
 [vars]
-# Loading control for basic configuration
+# Control loading of different categories of stored configuration
 USE_STORED_ADDRESS_CONFIGURATION = "true"
 USE_STORED_USER_CONFIGURATION = "true"
-# Loading control for advanced configuration
-USE_STORED_ERROR_MESSAGE_CONFIGURATION = "false"
-USE_STORED_FORMAT_CONFIGURATION = "false"
-USE_STORED_HEADER_CONFIGURATION = "false"
 # Address configuration
 DESTINATION = ""
 REJECT_TREATMENT = ": Invalid recipient"

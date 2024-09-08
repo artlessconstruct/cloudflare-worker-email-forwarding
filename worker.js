@@ -54,22 +54,21 @@ export const FIXED = {
 };
 
 export const DEFAULTS = {
+    ///////////////////////////////////////////////////////////////////////////
+    // Overrideable only by environment configuration
+
     // Control whether different categories of stored configuration will be
     // loaded from the Cloudflare KV-based key-value store
-
-    // For loading of stored BASIC configuration:
     //
     USE_STORED_ADDRESS_CONFIGURATION: "true",
     USE_STORED_USER_CONFIGURATION: "true",
 
-    // For loading of stored ADVANCED configuration:
-    //
-    USE_STORED_ERROR_MESSAGE_CONFIGURATION: "false",
-    USE_STORED_FORMAT_CONFIGURATION: "false",
-    USE_STORED_HEADER_CONFIGURATION: "false",
 
-    // BASIC configuration
+    ///////////////////////////////////////////////////////////////////////////
+    // Overrideable by stored and environment configuration
+    // (in priority order)
 
+    // Address configuration
     // If USE_STORED_ADDRESS_CONFIGURATION is enabled then
     // this stored address configuration will be loaded
     //
@@ -78,10 +77,11 @@ export const DEFAULTS = {
     SUBADDRESSES: "*",
     USERS: "",
 
-    // ADVANCED configuration
 
-    // If USE_STORED_FORMAT_CONFIGURATION is enabled then
-    // this stored format configuration will be loaded
+    ///////////////////////////////////////////////////////////////////////////
+    // Overrideable only by environment configuration
+
+    // Format configuration
     // REQUIREMENT: The three separators
     // - MUST all be different
     // - MUST not be '*' or '@'
@@ -103,26 +103,21 @@ export const DEFAULTS = {
     // Source: [HTML Standard](https://html.spec.whatwg.org/multipage/input.html#input.email.attrs.value.multiple)
     FORMAT_VALID_EMAIL_ADDRESS_REGEXP: "^[a-zA-Z0-9.!#$%&’*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*$",
 
-    // If USE_STORED_HEADER_CONFIGURATION is enabled then
-    // this stored custom header configuration will be loaded
+    // Custom header configuration
     //
     CUSTOM_HEADER: "X-My-Email-Forwarding",
     CUSTOM_HEADER_FAIL: "fail",
     CUSTOM_HEADER_PASS: "pass",
 
-    // If USE_STORED_ERROR_MESSAGE_CONFIGURATION is enabled then
-    // this stored error message configuration will be loaded
+    // Error message configuration
     //
     UNVERIFIED_DESTINATION_ERROR_MESSAGE: "destination address not verified",
 
     // Cloudflare KV key-value store
     MAP: new Map(),
 
-    // Helper constants and methods
-    //
-
+    ////////////////////////////////////////////////////////////////////////////
     // Overrideable implementation methods
-    //
 
     // Returns the user and subaddress parts of the local address 
     addressLocalParts(localPart, formatLocalPartSeparator) {
@@ -133,7 +128,7 @@ export const DEFAULTS = {
     },
 
     // Returns a description of a message 
-    messageDetails(message) {
+    emailDetails(message) {
         return `{from:${message.from}, to:${message.to}, size:${message.rawSize}}`;
     },
 
@@ -152,7 +147,7 @@ export const DEFAULTS = {
     // exception caught from message.forward (EmailMessage) will be rethrown,
     // otherwise a new overall exception will be thrown including the error
     // messages of all failing verified destinations.
-    async forward(message, destinations, customHeaders, messageDetails, configuration) {
+    async forward(message, destinations, customHeaders, emailDetails, configuration) {
         let successfulDestinations = [];
         let failedDestinationsCount = 0;
         let unverifiedDestinationsCount = 0;
@@ -168,7 +163,7 @@ export const DEFAULTS = {
                 console.log(`Forwarding success on ${forwardDetails}`);
             }
             catch (error) {
-                const errorDetail = `${forwardDetails} email:${messageDetails} error:'${error.message}'`;
+                const errorDetail = `${forwardDetails} email:${emailDetails} error:'${error.message}'`;
                 if (error.message === configuration.UNVERIFIED_DESTINATION_ERROR_MESSAGE) {
                     unverifiedDestinationsCount++;
                     unverifiedDestinations += `[${d + 1}]`;
@@ -186,7 +181,7 @@ export const DEFAULTS = {
         }
         if (failedDestinationsCount > 0) {
             const errorDetail =
-                `${FIXED.overallFailureErrorMessagePrefix} with totalDestinations#:${destinations.length} successfulDestinations#:${successfulDestinations.length} unverifiedDestinations#:${unverifiedDestinationsCount} failedDestinations#:${failedDestinationsCount} email:${messageDetails} unverifiedDestinations:${unverifiedDestinations} errors:'${errorMessages}'`;
+                `${FIXED.overallFailureErrorMessagePrefix} with totalDestinations#:${destinations.length} successfulDestinations#:${successfulDestinations.length} unverifiedDestinations#:${unverifiedDestinationsCount} failedDestinations#:${failedDestinationsCount} email:${emailDetails} unverifiedDestinations:${unverifiedDestinations} errors:'${errorMessages}'`;
             throw new Error(errorDetail);
         }
         return successfulDestinations;
@@ -200,41 +195,29 @@ export default {
     async email(message, environment, context) {
         // Environment-based configuration falls back to `DEFAULTS`.
         const {
-            // Loading control for basic configuration
             USE_STORED_ADDRESS_CONFIGURATION,
             USE_STORED_USER_CONFIGURATION,
 
-            // Loading control for advanced configuration
-            USE_STORED_ERROR_MESSAGE_CONFIGURATION,
-            USE_STORED_FORMAT_CONFIGURATION,
-            USE_STORED_HEADER_CONFIGURATION,
-
-            // Address configuration
             DESTINATION,
             REJECT_TREATMENT,
             SUBADDRESSES,
             USERS,
 
-            // Error message configuration
             UNVERIFIED_DESTINATION_ERROR_MESSAGE,
 
-            // Format configuration
             FORMAT_ADDRESS_SEPARATOR,
             FORMAT_FAILURE_SEPARATOR,
             FORMAT_LOCAL_PART_SEPARATOR,
             FORMAT_VALID_EMAIL_ADDRESS_REGEXP,
 
-            // Header configuration
             CUSTOM_HEADER,
             CUSTOM_HEADER_FAIL,
             CUSTOM_HEADER_PASS,
 
-            // KV map
             MAP,
 
-            // Implementation methods
             addressLocalParts,
-            messageDetails,
+            emailDetails,
             forward,
             isValidEmailAddress
         } = { ...DEFAULTS, ...environment };
@@ -289,21 +272,15 @@ export default {
                         `Ignoring ${issue.description} ${destinationType} destinations: '${issue.destinations.join(formatAddressSeparator)}'`);
             });
         }
-        // Controls to load different stored configuration
+
+        // Load and validate stored and environment configuration
+        //
+
         const useStoredAddressGlobalConfiguration =
             booleanFromString(USE_STORED_ADDRESS_CONFIGURATION);
         const useStoredUserConfiguration =
             booleanFromString(USE_STORED_USER_CONFIGURATION);
-        const useStoredErrorMessageConfiguration =
-            booleanFromString(USE_STORED_ERROR_MESSAGE_CONFIGURATION);
-        const useStoredFormatGlobalConfiguration =
-            booleanFromString(USE_STORED_FORMAT_CONFIGURATION);
-        const useStoredHeaderGlobalConfiguration =
-            booleanFromString(USE_STORED_HEADER_CONFIGURATION);
 
-        // If useStoredAddressGlobalConfiguration
-        // load stored address configuration
-        // which overrides environment-based configuration (and defaults)
         const globalDestination = (
             await storedConfigurationValue(useStoredAddressGlobalConfiguration,
                 '@DESTINATION')
@@ -324,55 +301,29 @@ export default {
                 '@USERS')
             ?? USERS
         ).removeWhitespace();
-        // If useStoredErrorMessageConfiguration
-        // load stored error message configuration
-        // which overrides environment-based configuration (and defaults)
+
         const unverifiedDestinationErrorMessage =
-            await storedConfigurationValue(useStoredErrorMessageConfiguration, '@UNVERIFIED_DESTINATION_ERROR_MESSAGE')
-            ?? UNVERIFIED_DESTINATION_ERROR_MESSAGE;
-        // If useStoredFormatGlobalConfiguration
-        // load stored format configuration
-        // which overrides environment-based configuration (and defaults)
-        const formatAddressSeparator = (
-            await storedConfigurationValue(useStoredFormatGlobalConfiguration,
-                '@FORMAT_ADDRESS_SEPARATOR')
-            ?? FORMAT_ADDRESS_SEPARATOR
-        ).removeWhitespace();
-        const formatFailureSeparator = (
-            await storedConfigurationValue(useStoredFormatGlobalConfiguration,
-                '@FORMAT_FAILURE_SEPARATOR')
-            ?? FORMAT_FAILURE_SEPARATOR
-        ).removeWhitespace();
-        const formatLocalPartSeparator = (
-            await storedConfigurationValue(useStoredFormatGlobalConfiguration,
-                '@FORMAT_LOCAL_PART_SEPARATOR')
-            ?? FORMAT_LOCAL_PART_SEPARATOR
-        ).removeWhitespace();
+            UNVERIFIED_DESTINATION_ERROR_MESSAGE;
+
+        const formatAddressSeparator =
+            FORMAT_ADDRESS_SEPARATOR.removeWhitespace();
+        const formatFailureSeparator =
+            FORMAT_FAILURE_SEPARATOR.removeWhitespace();
+        const formatLocalPartSeparator =
+            FORMAT_LOCAL_PART_SEPARATOR.removeWhitespace();
         const formatValidEmailAddressRegExp =
-            new RegExp(
-                await (storedConfigurationValue(useStoredFormatGlobalConfiguration,
-                    '@FORMAT_VALID_EMAIL_ADDRESS_REGEXP'))
-                ?? FORMAT_VALID_EMAIL_ADDRESS_REGEXP);
-        // If useStoredHeaderGlobalConfiguration
-        // load stored header configuration
-        // which overrides environment-based configuration (and defaults)
+            new RegExp(FORMAT_VALID_EMAIL_ADDRESS_REGEXP.trim());
+
         const customHeader =
-            validatedCustomHeader(
-                await storedConfigurationValue(useStoredHeaderGlobalConfiguration,
-                    '@CUSTOM_HEADER')
-                ?? CUSTOM_HEADER);
-        const customHeaderFail = (
-            await storedConfigurationValue(useStoredHeaderGlobalConfiguration,
-                '@CUSTOM_HEADER_FAIL')
-            ?? CUSTOM_HEADER_FAIL
-        ).trim();
-        const customHeaderPass = (
-            await storedConfigurationValue(useStoredHeaderGlobalConfiguration,
-                '@CUSTOM_HEADER_PASS')
-            ?? CUSTOM_HEADER_PASS
-        ).trim();
+            validatedCustomHeader(CUSTOM_HEADER);
+        const customHeaderFail =
+            CUSTOM_HEADER_FAIL.trim();
+        const customHeaderPass =
+            CUSTOM_HEADER_PASS.trim();
 
         // Derived configuration
+        //
+
         const startsWithLocalPartSeparatorRegExp =
             new RegExp(`^${escape(formatLocalPartSeparator)}`);
         const startsWithLocalPartOrDomainSeparatorRegExp =
@@ -382,19 +333,22 @@ export default {
         //     `${LocalPart}@${AbsoluteDomain}`
         // and LocalPart has the syntax
         //     `${user}${formatLocalPartSeparator}${subaddress}`
-        // obtain the LocalPart first by splitting the message's 'to'
-        // address using separator '@' and then use the addressLocalParts
-        // implementation to split this again into user and subaddress using
-        // separator formatLocalPartSeparator
+        // extract the user and subaddrress
+        //
         const messageLocalPart = message.to.split('@')[0];
         const [messageUser, messageSubaddress] = addressLocalParts(messageLocalPart, formatLocalPartSeparator);
-        const theMessageDetails = messageDetails(message);
+
+        // For logging
+        const theEmailDetails = emailDetails(message);
 
         // If useStoredUserConfiguration
         // load stored user configuration
         // which overrides environment-based configuration (and defaults)
         const userDestinationWithRejectTreatment
             = await storedConfigurationValue(useStoredUserConfiguration, messageUser);
+        // An empty string is valid (no subaddresses allowed) and the ??
+        // operator will prevent this value from stored configured from being
+        // overriden as '' ?? x evaluated to ''
         const userSubaddresses =
             (await storedConfigurationValue(useStoredUserConfiguration, `${messageUser}${formatLocalPartSeparator}`))?.removeWhitespace()
             ?? globalSubaddresses;
@@ -403,9 +357,12 @@ export default {
 
         // Given userDestinationWithRejectTreatment has the syntax:
         //     `${destination}${formatFailureSeparator}${rejectTreatment}`
-        // then split userDestinationWithRejectTreatment into destination and rejectTreatment.
-        // Empty strings indicate that the global configuration should be used
-        // so the '||' operator is used to achieve this.
+        // extract destination and rejectTreatment.
+        // Empty strings for these constants indicate that the global
+        // configuration should override the user configuration
+        // and the || operator allows such an override as '' is falsy
+        // and so '' || x evaluates to x 
+        //
         const userDestination =
             userDestinationWithRejectTreatment?.split(formatFailureSeparator).at(0).removeWhitespace()
             || globalDestination;
@@ -447,7 +404,7 @@ export default {
                     message,
                     validatedAcceptDestinations.valid,
                     new Headers({ [customHeader]: customHeaderPass }),
-                    theMessageDetails,
+                    theEmailDetails,
                     { UNVERIFIED_DESTINATION_ERROR_MESSAGE: unverifiedDestinationErrorMessage }
                 )).length > 0;
         }
@@ -467,7 +424,7 @@ export default {
                         message,
                         validatedRejectDestinations.valid,
                         new Headers({ [customHeader]: customHeaderFail }),
-                        theMessageDetails,
+                        theEmailDetails,
                         { UNVERIFIED_DESTINATION_ERROR_MESSAGE: unverifiedDestinationErrorMessage }
                     )).length > 0;
             }

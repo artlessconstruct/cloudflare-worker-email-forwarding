@@ -13,11 +13,6 @@ describe('Email forwarding: normal conditions', () => {
     const context = {};
     const TEST = {
         ...DEFAULTS,
-        USE_STORED_ADDRESS_CONFIGURATION: "true",
-        USE_STORED_USER_CONFIGURATION: "true",
-        USE_STORED_ERROR_MESSAGE_CONFIGURATION: "true",
-        USE_STORED_FORMAT_CONFIGURATION: "true",
-        USE_STORED_HEADER_CONFIGURATION: "true",
         REJECT_TREATMENT: "Invalid recipient"
     };
     const message = {
@@ -292,40 +287,6 @@ describe('Email forwarding: normal conditions', () => {
                 expect(reject).toHaveBeenCalledTimes(1);
             });
         });
-
-        describe('..., custom subaddressing separator character, custom forward header', () => {
-            const MAP = new Map();
-            MAP.set('@USERS', 'user1');
-            MAP.set('@DESTINATION', 'user@email.com');
-            MAP.set('@FORMAT_LOCAL_PART_SEPARATOR', '--');
-            MAP.set('@REJECT_TREATMENT', 'user+spam@email.com');
-            MAP.set('@CUSTOM_HEADER', 'X-Custom');
-            const environment = { ...TEST, MAP };
-
-            it.each([
-                ['user1@domain.com', MAP.get('@DESTINATION')],
-                ['user1--subA@domain.com', MAP.get('@DESTINATION')],
-            ])('%s should forward to %s', async (to, dest) => {
-                message.to = to;
-                await worker.email(message, environment, context);
-                expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [MAP.get('@CUSTOM_HEADER')]: TEST.CUSTOM_HEADER_PASS }));
-                expect(forward).toHaveBeenCalledTimes(1);
-            });
-
-            it.each([
-                ['user1+subA@domain.com', MAP.get('@REJECT_TREATMENT')],
-                ['user2@domain.com', MAP.get('@REJECT_TREATMENT')],
-                ['user2--subA@domain.com', MAP.get('@REJECT_TREATMENT')],
-            ])('%s should forward to "%s"', async (to, dest) => {
-                message.to = to;
-                await worker.email(message, environment, context);
-                expect(reject).not.toHaveBeenCalled();
-                expect(forward).toHaveBeenCalledWith(dest, new Headers({ [MAP.get('@CUSTOM_HEADER')]: TEST.CUSTOM_HEADER_FAIL }));
-                expect(forward).toHaveBeenCalledTimes(1);
-            });
-        });
-
     });
 
     describe('KV users', () => {
