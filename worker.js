@@ -36,20 +36,51 @@ String.prototype.removeWhitespace = function () {
 // Fixed configuration for helper functions and for testing
 
 export const FIXED = {
+    failoverDestinationFailureErrorMessagePrefix: 'Forwarding failover destination failure',
     overallFailureErrorMessagePrefix: 'Forwarding overall failure',
-
-    // Matches if it is a valid custom header, i.e.starts with 'X-'
-    validCustomHeaderRegExp: /X-.*/,
 
     // Matches if starts with a non-alphanumeric
 
     startsWithNonAlphanumericRegExp: /^[^A-Z0-9]/i,
 
     // Prepends to the base with prepend if the regexp matches
-    prepend(base, prependIsRequiredRegExp, prepend) {
-        return prependIsRequiredRegExp.test(base)
-            ? prepend + base
-            : base;
+    prepend(base, prependConditions) {
+        for (const prependCondition of prependConditions) {
+            const shouldPrepend =
+                typeof prependCondition.test === 'string'
+                && base.startsWith(prependCondition.test)
+                || prependCondition.test instanceof RegExp
+                && prependCondition.test.test(base);
+            if (shouldPrepend)
+                return prependCondition.prepend + base;
+        }
+        return base;
+    }
+};
+
+class FailoverDestinationResult {
+    constructor(succeeded, successfulDestination, unverifiedDestinationsCount, unverifiedDestinations, errorMessages, errors) {
+        this.succeeded = succeeded;
+        this.successfulDestination = successfulDestination;
+        this.unverifiedDestinationsCount = unverifiedDestinationsCount;
+        this.unverifiedDestinations = unverifiedDestinations;
+        this.errorMessages = errorMessages;
+        this.errors = errors;
+    }
+};
+
+class FailoverDestinationError extends Error {
+    constructor(failoverDestinationResult) {
+        super(FIXED.failoverDestinationFailureErrorMessagePrefix);
+        this.failoverDestinationResult = failoverDestinationResult;
+    }
+};
+
+class OverallFailureError extends Error {
+    constructor(errors, message) {
+        super(message);
+        this.name = 'OverallFailureError';
+        this.errors = errors;
     }
 };
 
@@ -98,8 +129,10 @@ export const DEFAULTS = {
     // them in any case.
     //
     FORMAT_ADDRESS_SEPARATOR: ",",
-    FORMAT_FAILURE_SEPARATOR: ";",
+    FORMAT_FAILOVER_SEPARATOR: ":",
     FORMAT_LOCAL_PART_SEPARATOR: "+",
+    FORMAT_REJECT_SEPARATOR: ";",
+    FORMAT_VALID_CUSTOM_HEADER_REGEXP: "X-.*",
     // Source: [HTML Standard](https://html.spec.whatwg.org/multipage/input.html#input.email.attrs.value.multiple)
     FORMAT_VALID_EMAIL_ADDRESS_REGEXP: "^[a-zA-Z0-9.!#$%&’*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*$",
 
@@ -119,23 +152,26 @@ export const DEFAULTS = {
     ////////////////////////////////////////////////////////////////////////////
     // Overrideable implementation methods
 
-    // Returns the user and subaddress parts of the local address 
+    // Returns the user and subaddress parts of the local address
+    // in lower case
     addressLocalParts(localPart, formatLocalPartSeparator) {
-        // In case localPart does not contain a formatLocalPartSeparator
-        // use concat and slice to ensure that a 2 element array is always
-        // returned with the 2nd element '' in this case
-        return localPart.split(formatLocalPartSeparator, 2).concat('').slice(0, 2);
+        // 1. Convert to lower case
+        // 2. Split this on first instance of formatLocalPartSeparator only
+        // into a 2 element array
+        const lowerCaseLocalPart = localPart.toLowerCase();
+        const firstLocalPartSeparatorIndex = lowerCaseLocalPart.indexOf(formatLocalPartSeparator);
+        return firstLocalPartSeparatorIndex >= 0
+            ? [lowerCaseLocalPart.slice(0, firstLocalPartSeparatorIndex),
+            lowerCaseLocalPart.slice(firstLocalPartSeparatorIndex + formatLocalPartSeparator.length)]
+            : [lowerCaseLocalPart, ''];
     },
 
     // Returns a description of a message 
-    emailDetails(message) {
+    emailImage(message) {
         return `{from:${message.from}, to:${message.to}, size:${message.rawSize}}`;
     },
-
-    // Forwards a message to zero or more destinations and returns the list
-    // of destinations that were successfully forwarded to.
-    // Throws if there is failure to forward to a verified destination but
-    // only after all destinations have been attempted.
+    // Forward to a failoverDestination by attempting to forward to
+    // each simpleDestination sequentially, stopping when the first forward succeeds. 
     // Exceptions caught for unverified destinations will not trigger any
     // exception to be propagated but may cause a message to be rejected if all
     // other verified destinations fail (or there are none).
@@ -143,46 +179,84 @@ export const DEFAULTS = {
     // exception leads to the message sender repeatedly resending the message
     // which serves no purpose as until the destination is verified forwarding
     // will always fail.
-    // If the forwarding request is to only one destination then the same
-    // exception caught from message.forward (EmailMessage) will be rethrown,
-    // otherwise a new overall exception will be thrown including the error
-    // messages of all failing verified destinations.
-    async forward(message, destinations, customHeaders, emailDetails, configuration) {
-        let successfulDestinations = [];
-        let failedDestinationsCount = 0;
+    // Returns a FailoverDestinationResult summarising all attempts.
+    async forwardFailoverDestination(
+        message, failoverDestination, failoverDestinationId, customHeaders, emailImage, configuration) {
         let unverifiedDestinationsCount = 0;
         let unverifiedDestinations = '';
         let errorMessages = '';
-        for (let d = 0; d < destinations.length; d++) {
-            const destination = destinations.at(d);
-            const forwardDetails =
-                `destination#:[${d + 1}]/${destinations.length} destination:${destination}`;
+        let errors = [];
+        let s = 0;
+        let succeeded = false;
+        for (const simpleDestination of failoverDestination) {
+            const id = `[${failoverDestinationId},${s + 1}/${failoverDestination.length}]`;
+            const forwardDetail =
+                `destination#:${id} destination:${simpleDestination}`;
             try {
-                await message.forward(destination, customHeaders);
-                successfulDestinations.push(destination);
-                console.log(`Forwarding success on ${forwardDetails}`);
+                await message.forward(simpleDestination, customHeaders);
+                succeeded = true;
+                console.log(`Forwarding success on ${forwardDetail}`);
+                break;
             }
             catch (error) {
-                const errorDetail = `${forwardDetails} email:${emailDetails} error:'${error.message}'`;
+                const errorDetail = `${forwardDetail} email:${emailImage} error:'${error.message}'`;
                 if (error.message === configuration.UNVERIFIED_DESTINATION_ERROR_MESSAGE) {
-                    unverifiedDestinationsCount++;
-                    unverifiedDestinations += `[${d + 1}]`;
+                    unverifiedDestinationsCount += 1;
+                    unverifiedDestinations += id;
                     console.warn(`Forwarding destination unverified on ${errorDetail}`);
                 } else {
-                    // If there is only one destination then just rethrow
-                    if (destinations.length === 1) {
-                        throw error;
-                    }
-                    failedDestinationsCount++;
-                    errorMessages += `[${d + 1}]:` + error.message;
+                    errors.push(error);
+                    errorMessages += `${id}:'${error.message}'`;
                     console.error(`Forwarding failure on ${errorDetail}`);
                 }
             }
+            s++;
         }
-        if (failedDestinationsCount > 0) {
-            const errorDetail =
-                `${FIXED.overallFailureErrorMessagePrefix} with totalDestinations#:${destinations.length} successfulDestinations#:${successfulDestinations.length} unverifiedDestinations#:${unverifiedDestinationsCount} failedDestinations#:${failedDestinationsCount} email:${emailDetails} unverifiedDestinations:${unverifiedDestinations} errors:'${errorMessages}'`;
-            throw new Error(errorDetail);
+        succeeded = succeeded || errors.length === 0;
+        const failoverDestinationResult = new FailoverDestinationResult(
+            succeeded,
+            succeeded ? failoverDestination.at(s) : null,
+            unverifiedDestinationsCount,
+            unverifiedDestinations,
+            errorMessages,
+            errors
+        );
+        return failoverDestinationResult;
+    },
+    // Concurrently forwards a message to zero or more destinations and returns the list
+    // of destinations that were successfully forwarded to.
+    // Throws if there is failure to forward to a verified destination but
+    // only after all destinations have been attempted.
+    // If the forwarding request is to only one destination then the same
+    // exception caught from message.forward will be rethrown,
+    // otherwise a new aggregate exception will be thrown including the error
+    // messages and errors of all failing verified destinations.
+    async forward(message, failoverDestinations, customHeaders, emailImage, configuration) {
+        const failoverDestinationResults = await Promise.all(
+            failoverDestinations.map((failoverDestination, failoverDestinationIndex) =>
+                configuration.forwardFailoverDestination(
+                    message, failoverDestination,
+                    `${failoverDestinationIndex + 1}/${failoverDestinations.length}`,
+                    customHeaders, emailImage, configuration)
+            ));
+        const succeeded = failoverDestinationResults.map(
+            result => result.succeeded).every(Boolean);
+        const successfulDestinations = failoverDestinationResults
+            .map(result => result.successfulDestination).filter(Boolean);
+        const unverifiedDestinationsCount = failoverDestinationResults
+            .reduce((total, result) => total + result.unverifiedDestinationsCount, 0);
+        const unverifiedDestinations = failoverDestinationResults
+            .map(result => result.unverifiedDestinations).join('');
+        const errorMessages = failoverDestinationResults
+            .map(result => result.errorMessages).join('');
+        const errors = failoverDestinationResults
+            .flatMap(result => result.errors);
+        if (!succeeded) {
+            if (failoverDestinations.length === 1 && failoverDestinations[0].length === 1)
+                throw errors.at(0);
+            const errorMessage =
+                `${FIXED.overallFailureErrorMessagePrefix} with failoverDestinations#:${failoverDestinations.length} unverifiedDestinations#:${unverifiedDestinationsCount} failureDestinations#:${errors.length} email:${emailImage} unverifiedDestinations:${unverifiedDestinations} errors:'${errorMessages}'`;
+            throw new OverallFailureError(errors, errorMessage);
         }
         return successfulDestinations;
     },
@@ -193,7 +267,8 @@ export const DEFAULTS = {
 
 export default {
     async email(message, environment, context) {
-        // Environment-based configuration falls back to `DEFAULTS`.
+        // Environment-based configuration which overrides `DEFAULTS`
+        //
         const {
             USE_STORED_ADDRESS_CONFIGURATION,
             USE_STORED_USER_CONFIGURATION,
@@ -206,8 +281,10 @@ export default {
             UNVERIFIED_DESTINATION_ERROR_MESSAGE,
 
             FORMAT_ADDRESS_SEPARATOR,
-            FORMAT_FAILURE_SEPARATOR,
+            FORMAT_FAILOVER_SEPARATOR,
             FORMAT_LOCAL_PART_SEPARATOR,
+            FORMAT_REJECT_SEPARATOR,
+            FORMAT_VALID_CUSTOM_HEADER_REGEXP,
             FORMAT_VALID_EMAIL_ADDRESS_REGEXP,
 
             CUSTOM_HEADER,
@@ -217,12 +294,15 @@ export default {
             MAP,
 
             addressLocalParts,
-            emailDetails,
+            emailImage,
+            forwardFailoverDestination,
             forward,
             isValidEmailAddress
         } = { ...DEFAULTS, ...environment };
 
-        // Helper methods
+        // Helper methods independent of configuration
+        //
+
         function booleanFromString(stringBoolean) {
             return ['true', '1']
                 .includes(stringBoolean.trim().toLowerCase());
@@ -233,44 +313,6 @@ export default {
             // which is important because '' is used to indicate that
             // the global configured should be used for that destination
             return shouldLoad ? (await MAP.get(key) ?? undefined) : undefined;
-        }
-        function validatedCustomHeader(customHeader) {
-            const customHeaderNoWhitespace = customHeader.removeWhitespace();
-            if (FIXED.validCustomHeaderRegExp.test(customHeaderNoWhitespace))
-                return customHeaderNoWhitespace;
-            else
-                throw (`Invalid custom header ${customHeaderNoWhitespace}`);
-        }
-        // Return an object with valid, invalid and duplicate destinations after
-        // - removing all whitespace
-        // - prepend the user to the destination if it matches regexp
-        function validatedDestinations(destinations, shouldPrependUserRegExp, user) {
-            return destinations.reduce((validatedDestinations, destination) => {
-                destination = FIXED.prepend(destination.removeWhitespace(),
-                    shouldPrependUserRegExp, user);
-                if (isValidEmailAddress(destination, formatValidEmailAddressRegExp)) {
-                    if (!validatedDestinations.valid.includes(destination)) {
-                        validatedDestinations.valid.push(destination);
-                    } else {
-                        validatedDestinations.duplicate.push(destination);
-                    }
-                } else {
-                    if (destination !== '') {
-                        validatedDestinations.invalid.push(destination);
-                    }
-                }
-                return validatedDestinations;
-            }, { valid: [], invalid: [], duplicate: [] });
-        }
-        function warnAboutBadDestinations(validatedDestinations, destinationType) {
-            [
-                { description: 'invalidly formatted', destinations: validatedDestinations.invalid },
-                { description: 'duplicate', destinations: validatedDestinations.duplicate },
-            ].map(issue => {
-                if (issue.destinations.length > 0)
-                    console.warn(
-                        `Ignoring ${issue.description} ${destinationType} destinations: '${issue.destinations.join(formatAddressSeparator)}'`);
-            });
         }
 
         // Load and validate stored and environment configuration
@@ -295,39 +337,121 @@ export default {
             await storedConfigurationValue(useStoredAddressGlobalConfiguration,
                 '@SUBADDRESSES')
             ?? SUBADDRESSES
-        ).removeWhitespace();
+        ).removeWhitespace().toLowerCase();
         const globalUsers = (
             await storedConfigurationValue(useStoredAddressGlobalConfiguration,
                 '@USERS')
             ?? USERS
-        ).removeWhitespace();
+        ).removeWhitespace().toLowerCase();
 
         const unverifiedDestinationErrorMessage =
             UNVERIFIED_DESTINATION_ERROR_MESSAGE;
 
         const formatAddressSeparator =
-            FORMAT_ADDRESS_SEPARATOR.removeWhitespace();
-        const formatFailureSeparator =
-            FORMAT_FAILURE_SEPARATOR.removeWhitespace();
+            FORMAT_ADDRESS_SEPARATOR;
+        const formatFailoverSeparator =
+            FORMAT_FAILOVER_SEPARATOR;
         const formatLocalPartSeparator =
-            FORMAT_LOCAL_PART_SEPARATOR.removeWhitespace();
+            FORMAT_LOCAL_PART_SEPARATOR;
+        const formatRejectSeparator =
+            FORMAT_REJECT_SEPARATOR;
         const formatValidEmailAddressRegExp =
             new RegExp(FORMAT_VALID_EMAIL_ADDRESS_REGEXP.trim());
+        const formatValidCustomHeaderRegExp =
+            new RegExp(FORMAT_VALID_CUSTOM_HEADER_REGEXP.trim());
 
         const customHeader =
-            validatedCustomHeader(CUSTOM_HEADER);
+            validateCustomHeader(CUSTOM_HEADER);
         const customHeaderFail =
             CUSTOM_HEADER_FAIL.trim();
         const customHeaderPass =
             CUSTOM_HEADER_PASS.trim();
 
-        // Derived configuration
+        // Derived constants
         //
 
         const startsWithLocalPartSeparatorRegExp =
             new RegExp(`^${escape(formatLocalPartSeparator)}`);
         const startsWithLocalPartOrDomainSeparatorRegExp =
             new RegExp(`^(${escape('@')}|${escape(formatLocalPartSeparator)})`);
+
+        // Helper methods dependent on configuration
+        //
+
+        function validateCustomHeader(customHeader) {
+            const customHeaderNoWhitespace = customHeader.removeWhitespace();
+            if (formatValidCustomHeaderRegExp.test(customHeaderNoWhitespace))
+                return customHeaderNoWhitespace;
+            else
+                throw (`Invalid custom header ${customHeaderNoWhitespace}`);
+        }
+        // Return an object with valid, invalid simple addresses for a failover
+        // destination after
+        // - removing all whitespace
+        // - prepend the message's user to the destination if it begins with
+        //   either formatLocalPartSeparator or '@'
+        function validateFailoverDestination(failoverDestinationText) {
+            return failoverDestinationText.split(formatFailoverSeparator).reduce(
+                (newFailoverDestination, destination) => {
+                    destination = FIXED.prepend(destination.removeWhitespace(),
+                        [{ test: formatLocalPartSeparator, prepend: messageUser },
+                        { test: '@', prepend: messageUser }]
+                    );
+                    if (isValidEmailAddress(destination, formatValidEmailAddressRegExp)) {
+                        newFailoverDestination.valid.push(destination);
+                    } else if (destination !== '') {
+                        newFailoverDestination.invalid.push(destination);
+                    }
+                    return newFailoverDestination;
+                },
+                { valid: [], invalid: [] }
+            );
+        }
+        function validateDestination(destinationText) {
+            return destinationText.split(formatAddressSeparator).reduce(
+                (newFailoverDestinations, failoverDestinationText) => {
+                    const nonDedupedfailoverDestination =
+                        validateFailoverDestination(failoverDestinationText);
+                    const dedupedFailoverDestination = nonDedupedfailoverDestination.valid.reduce(
+                        (newFailoverDestination, destination) => {
+                            if (!newFailoverDestinations.validOrdinary.includes(destination)) {
+                                newFailoverDestinations.validOrdinary.push(destination);
+                                newFailoverDestination.push(destination);
+                            } else {
+                                newFailoverDestinations.duplicateOrdinary.push(destination);
+                            };
+                            return newFailoverDestination;
+                        }, []);
+                    if (dedupedFailoverDestination.length > 0)
+                        newFailoverDestinations.validFailover.push(dedupedFailoverDestination);
+                    newFailoverDestinations.invalidOrdinary.concat(nonDedupedfailoverDestination.invalid);
+                    return newFailoverDestinations;
+                },
+                { validFailover: [], validOrdinary: [], invalidOrdinary: [], duplicateOrdinary: [] }
+            );
+        }
+        function warnAboutBadDestinations(validatedFailoverDestinations, destinationType) {
+            [
+                {
+                    description: 'invalidly formatted',
+                    destinations: validatedFailoverDestinations.invalidOrdinary
+                },
+                {
+                    description: 'duplicate',
+                    destinations: validatedFailoverDestinations.duplicateOrdinary
+                },
+            ].map(issue => {
+                if (issue.destinations.length > 0)
+                    console.warn(
+                        `Ignoring ${issue.description} ${destinationType} destinations: '${issue.destinations.join(formatAddressSeparator)}'`);
+            });
+        }
+        function failoverDestinationsImage(validatedFailoverDestinations) {
+            return validatedFailoverDestinations.map(
+                failoverDestination =>
+                    failoverDestination.join(formatFailoverSeparator)
+            ).join(formatAddressSeparator);
+        }
 
         // Given from RFC 5233 that the email address has the syntax:
         //     `${LocalPart}@${AbsoluteDomain}`
@@ -339,7 +463,7 @@ export default {
         const [messageUser, messageSubaddress] = addressLocalParts(messageLocalPart, formatLocalPartSeparator);
 
         // For logging
-        const theEmailDetails = emailDetails(message);
+        const theEmailImage = emailImage(message);
 
         // If useStoredUserConfiguration
         // load stored user configuration
@@ -347,16 +471,16 @@ export default {
         const userDestinationWithRejectTreatment
             = await storedConfigurationValue(useStoredUserConfiguration, messageUser);
         // An empty string is valid (no subaddresses allowed) and the ??
-        // operator will prevent this value from stored configured from being
-        // overriden as '' ?? x evaluated to ''
+        // operator will prevent this value from stored configuration from being
+        // overriden as '' ?? x evaluates to ''
         const userSubaddresses =
-            (await storedConfigurationValue(useStoredUserConfiguration, `${messageUser}${formatLocalPartSeparator}`))?.removeWhitespace()
+            (await storedConfigurationValue(useStoredUserConfiguration, `${messageUser}${formatLocalPartSeparator}`))?.removeWhitespace().toLowerCase()
             ?? globalSubaddresses;
         const userRequiresSubaddress = userSubaddresses.startsWith(formatLocalPartSeparator);
         const userConcreteSubaddresses = userSubaddresses.replace(startsWithLocalPartSeparatorRegExp, '');
 
         // Given userDestinationWithRejectTreatment has the syntax:
-        //     `${destination}${formatFailureSeparator}${rejectTreatment}`
+        //     `${destination}${formatRejectSeparator}${rejectTreatment}`
         // extract destination and rejectTreatment.
         // Empty strings for these constants indicate that the global
         // configuration should override the user configuration
@@ -364,10 +488,10 @@ export default {
         // and so '' || x evaluates to x 
         //
         const userDestination =
-            userDestinationWithRejectTreatment?.split(formatFailureSeparator).at(0).removeWhitespace()
+            userDestinationWithRejectTreatment?.split(formatRejectSeparator).at(0).removeWhitespace()
             || globalDestination;
         const userRejectTreatment =
-            userDestinationWithRejectTreatment?.split(formatFailureSeparator).at(1)?.trim()
+            userDestinationWithRejectTreatment?.split(formatRejectSeparator).at(1)?.trim()
             || globalRejectTreatment;
 
         // The message user is allowed if:
@@ -393,39 +517,45 @@ export default {
         // Accept forward if the the message user and subaddress are allowed
         let acceptForwardWasSuccessful = false;
         if (messageUserIsAllowed && messageSubaddressIsAllowed) {
-            const validatedAcceptDestinations =
-                validatedDestinations(userDestination.split(formatAddressSeparator), startsWithLocalPartOrDomainSeparatorRegExp, messageUser);
-            warnAboutBadDestinations(validatedAcceptDestinations, 'accept forward');
+            const acceptFailoverDestinations =
+                validateDestination(userDestination);
+            warnAboutBadDestinations(acceptFailoverDestinations, 'accept forward');
             console.info(
-                `Accept forwarding to destinations:'${validatedAcceptDestinations.valid.join(formatAddressSeparator)}'`);
+                `Accept forwarding to destinations:'${failoverDestinationsImage(acceptFailoverDestinations.validFailover)}'`);
             // Forward with custom header set to customHeaderPass
             acceptForwardWasSuccessful = (
                 await forward(
                     message,
-                    validatedAcceptDestinations.valid,
+                    acceptFailoverDestinations.validFailover,
                     new Headers({ [customHeader]: customHeaderPass }),
-                    theEmailDetails,
-                    { UNVERIFIED_DESTINATION_ERROR_MESSAGE: unverifiedDestinationErrorMessage }
+                    theEmailImage,
+                    {
+                        UNVERIFIED_DESTINATION_ERROR_MESSAGE: unverifiedDestinationErrorMessage,
+                        forwardFailoverDestination: forwardFailoverDestination
+                    }
                 )).length > 0;
         }
 
         // If no accept forwards succeeded then reject forward
         if (!acceptForwardWasSuccessful) {
-            const validatedRejectDestinations =
-                validatedDestinations(userRejectTreatment.split(formatAddressSeparator), startsWithLocalPartOrDomainSeparatorRegExp, messageUser);
+            const rejectFailoverDestinations =
+                validateDestination(userRejectTreatment);
             let rejectForwardWasSuccessful = false;
             // Reject forward if there are some valid reject forward destinations
-            if (validatedRejectDestinations.valid.length > 0) {
-                warnAboutBadDestinations(validatedRejectDestinations, 'reject forward');
+            if (rejectFailoverDestinations.validFailover.length > 0) {
+                warnAboutBadDestinations(rejectFailoverDestinations, 'reject forward');
                 console.info(
-                    `Reject forwarding to destinations:'${validatedRejectDestinations.valid.join(formatAddressSeparator)}'`);
+                    `Reject forwarding to destinations:'${failoverDestinationsImage(rejectFailoverDestinations.validFailover)}'`);
                 rejectForwardWasSuccessful =
                     (await forward(
                         message,
-                        validatedRejectDestinations.valid,
+                        rejectFailoverDestinations.validFailover,
                         new Headers({ [customHeader]: customHeaderFail }),
-                        theEmailDetails,
-                        { UNVERIFIED_DESTINATION_ERROR_MESSAGE: unverifiedDestinationErrorMessage }
+                        theEmailImage,
+                        {
+                            UNVERIFIED_DESTINATION_ERROR_MESSAGE: unverifiedDestinationErrorMessage,
+                            forwardFailoverDestination: forwardFailoverDestination
+                        }
                     )).length > 0;
             }
 
@@ -436,10 +566,14 @@ export default {
                     || !globalRejectTreatment.includes('@') && globalRejectTreatment
                     || !REJECT_TREATMENT.includes('@') && REJECT_TREATMENT.trim()
                     || DEFAULTS.REJECT_TREATMENT.trim();
-                const expandedRejectReason = FIXED.prepend(
-                    userRejectReason, FIXED.startsWithNonAlphanumericRegExp, messageLocalPart);
-                console.info(`Direct rejecting with failureReason:'${expandedRejectReason}'`);
-                message.setReject(expandedRejectReason);
+                // Prepend the message's local part if the reject reason begin's
+                // with a non-alphanumeric
+                const fullRejectReason = FIXED.prepend(
+                    userRejectReason,
+                    [{ test: FIXED.startsWithNonAlphanumericRegExp, prepend: messageLocalPart }]
+                );
+                console.info(`Direct rejecting with rejectReason:'${fullRejectReason}'`);
+                message.setReject(fullRejectReason);
             }
         }
     }

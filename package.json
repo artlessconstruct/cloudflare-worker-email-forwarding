@@ -7,17 +7,18 @@
         "tail": "wrangler tail",
         "test": "vitest watch",
         "test:run": "vitest run",
-        "test:debug:1": "vitest --inspect-brk --pool threads --poolOptions.threads.singleThread # To run in a single worker",
-        "test:debug:2": "vitest --inspect-brk --pool forks --poolOptions.forks.singleFork # To run in a single child process",
+        "test:debug": "vitest run --inspect-brk --no-file-parallelism",
+        "test:debug:1": "vitest run --inspect-brk --pool threads --poolOptions.threads.singleThread # To run in a single worker",
+        "test:debug:2": "vitest run --inspect-brk --pool forks --poolOptions.forks.singleFork # To run in a single child process",
         "test:debug:3": "vitest run --inspect-brk --no-file-parallelism # If pool is unknown",
-        "test:log": "pnpx vitest --disable-console-intercept",
-        "test:log:rep": "vitest --disable-console-intercept",
-        "test:log:rep:basic": "vitest --reporter=basic --disable-console-intercept"
+        "test:log": "pnpx vitest run --disable-console-intercept",
+        "test:log:vi": "vitest run --disable-console-intercept",
+        "test:log:vi:basic": "vitest run --reporter=basic --disable-console-intercept"
     },
     "devDependencies": {
         "@cloudflare/vitest-pool-workers": "^0.4.28",
         "vitest": "^1.5.0",
-        "wrangler": "^3.75.0"
+        "wrangler": "^3.83.0"
     },
     "dependencies": {
         "regexp.escape": "^2.0.1"
