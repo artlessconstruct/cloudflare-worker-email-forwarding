@@ -20,8 +20,10 @@ USERS = ""
 UNVERIFIED_DESTINATION_ERROR_MESSAGE = "destination address not verified"
 # Format configuration
 FORMAT_ADDRESS_SEPARATOR = ","
-FORMAT_FAILURE_SEPARATOR = ";"
+FORMAT_FAILOVER_SEPARATOR = ":"
 FORMAT_LOCAL_PART_SEPARATOR = "+"
+FORMAT_REJECT_SEPARATOR = ";"
+FORMAT_VALID_CUSTOM_HEADER_REGEXP = "X-.*"
 FORMAT_VALID_EMAIL_ADDRESS_REGEXP = "^[a-zA-Z0-9.!#$%&’*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*$"
 # Header configuration
 CUSTOM_HEADER = "X-My-Email-Forwarding"
