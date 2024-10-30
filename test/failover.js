@@ -21,10 +21,16 @@ describe('Email forwarding: failover conditions', () => {
         from: 'random@internet.com',
         forward: undefined,
         setReject: (reason) => reason,
-        // ...
         to: undefined,
-        // ---
-        headers: {},
+        headers: {
+            get: (headerName) => {
+                const mockHeaders = {
+                    'Message-ID': 'h9MTV7vNalV3',
+                    'Date': 'Wed, 30 Oct 2024 15:30:00 +0000'
+                };
+                return mockHeaders[headerName];
+            }
+        },
         raw: null,
         rawSize: null,
     };

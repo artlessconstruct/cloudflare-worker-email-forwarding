@@ -9,10 +9,16 @@ workers_dev = true
 
 send_metrics = true
 
+[observability]
+enabled = true
+head_sampling_rate = 1
+
 [vars]
 # Control loading of different categories of stored configuration
 USE_STORED_ADDRESS_CONFIGURATION = "true"
 USE_STORED_USER_CONFIGURATION = "true"
+# Control logging
+CONSOLE_LOG_ENABLED = "false"
 # Address configuration
 DESTINATION = ""
 REJECT_TREATMENT = ": Invalid recipient"
