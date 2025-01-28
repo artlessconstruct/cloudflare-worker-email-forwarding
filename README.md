@@ -1,7 +1,6 @@
 # Cloudflare Worker `email-forwarding`
 
-_A [Cloudflare email worker][cf-email#workers] providing configurable [email
-subaddressing][wiki-ea#sa] (a.k.a. [subaddress extension] [RFC 5233], detailed addressing, plus addresses, tagged addresses, mail extension, etc.) to one or more destination addresses_
+_A [Cloudflare email worker][cf-email#workers] providing configurable email forwarding with email [subaddressing][wiki-ea#sa] (a.k.a. [subaddress extension][rfc-5233], tagged address, plus address, etc.) support, including to multiple destinations simultaneously, where each such destination is a redundant list of simple addresses attempted sequentially until one succeeds._
 
 [cf-email#workers]: https://developers.cloudflare.com/email-routing/email-workers/
 [rfc-5233]: https://datatracker.ietf.org/doc/html/rfc5233

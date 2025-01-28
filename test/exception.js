@@ -5,20 +5,16 @@ import escape from 'regexp.escape';
 import worker, { FIXED, DEFAULTS } from "./worker.js";
 
 // Exceptional conditions:
-// - forward mock can throw exceptions
-// - Destinations can be unverified
-// - Pathological conditions sought 
+// - forward mock throwing exceptions due to destinations having either
+//     recoverable or unrecoverable errors
+// - Pathological 
 //
 describe('Email forwarding: exceptional conditions', () => {
     const context = {};
     const TEST = {
         ...DEFAULTS,
-        USE_STORED_ADDRESS_CONFIGURATION: "true",
-        USE_STORED_USER_CONFIGURATION: "true",
-        USE_STORED_ERROR_MESSAGE_CONFIGURATION: "true",
-        USE_STORED_FORMAT_CONFIGURATION: "true",
-        USE_STORED_HEADER_CONFIGURATION: "true",
-        REJECT_TREATMENT: "Invalid recipient"
+        REJECT_TREATMENT: 'default reject reason',
+        UNRECOVERABLE_FORWARD_IMPLEMENTATION_ERROR_MESSAGE: 'Unrecoverable Forward Implementation Error',
     };
     const message = {
         from: 'random@internet.com',
@@ -37,7 +33,7 @@ describe('Email forwarding: exceptional conditions', () => {
         raw: null,
         rawSize: null,
     };
-    const reject = vi.spyOn(message, 'setReject');
+    const setReject = vi.spyOn(message, 'setReject');
 
     beforeEach(async () => {
         message.to = null;
@@ -49,286 +45,293 @@ describe('Email forwarding: exceptional conditions', () => {
         vi.resetAllMocks();
     });
 
-    function entireMatchRegExp(s) { return new RegExp('^' + escape(s) + '$') };
-    const serviceErrorMessage = 'Service failure';
-    const serviceErrorRegExp = entireMatchRegExp(serviceErrorMessage);
-    const unverifiedDestinationErrorMessage = TEST.UNVERIFIED_DESTINATION_ERROR_MESSAGE;
-    const overallFailureErrorMessage = FIXED.overallFailureErrorMessagePrefix;
-    const overallFailureErrorRegExp = new RegExp(`^${escape(overallFailureErrorMessage)}`);
+    // Mocked errors injected
+    const recoverableForwardImplementationErrorMessage = FIXED.RECOVERABLE_FORWARD_IMPLEMENTATION_ERROR_MESSAGE_1;
+    const unrecoverableForwardImplementationErrorMessage = TEST.UNRECOVERABLE_FORWARD_IMPLEMENTATION_ERROR_MESSAGE;
 
-    describe('One destination, one failure', () => {
+    // Test subject errors caught
+    const recoverableForwardInterfaceErrorMessage = FIXED.RECOVERABLE_FORWARD_INTERFACE_ERROR_MESSAGE;
+    const recoverableForwardInterfaceErrorRegExp = new RegExp(`^${escape(recoverableForwardInterfaceErrorMessage)}`);
+
+    // Reference test data
+    const r = {
+        user: 'user',
+        dest: 'user@email.com',
+        destDomain: '@email.com',
+        rejectDest: 'user+spam@email.com',
+        rejectReason: 'common reject reason',
+        user1: 'user1',
+        dest1: 'user1@email.com',
+        dest1a: 'user1a@email.com',
+        dest1b: 'user1b@email.com',
+        rejectDest1: 'user1+spam@email.com',
+        rejectDest1a: 'user1+spam1a@email.com',
+        rejectDest1b: 'user1+spam1b@email.com',
+        rejectReason1: 'user1 reject reason',
+    };
+
+    const failHeaders = new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_FAIL });
+    const passHeaders = new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS });
+
+    describe('One destination, one recoverable error', () => {
         const environment = {
             ...TEST,
-            USERS: 'user1',
-            DESTINATION: 'user@email.com',
+            USERS: r.user1,
+            DESTINATION: r.dest1,
         };
 
         it.each([
-            ['user1@domain.com',
-                environment.DESTINATION,
-                serviceErrorMessage,
-                serviceErrorRegExp
+            ['user1@domain.com', r.dest1,
+                recoverableForwardImplementationErrorMessage,
+                recoverableForwardInterfaceErrorMessage,
+                recoverableForwardInterfaceErrorRegExp,
             ],
-        ])('%s fowards to %s, catches \'%s\', rethrows', async (to, dest, errorMessage, errorRegExp) => {
+        ])('%s (fowards to %s, catches \'%s\') => throws \'%s\'', async (to, dest, mockErrorMessage, expectedErrorMessage, expectedErrorRegExp) => {
             message.to = to;
             message.forward = vi.fn()
-                .mockRejectedValue(new Error(errorMessage));
+                .mockRejectedValue(new Error(mockErrorMessage));
             const forward = vi.spyOn(message, 'forward');
-
             await expect(() => worker.email(message, environment, context)).rejects
-                .toThrowError(errorRegExp);
-            expect(reject).not.toHaveBeenCalled();
-            expect(forward).toHaveBeenCalledWith(dest, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
+                .toThrowError(expectedErrorRegExp);
+            expect(forward).toHaveBeenCalledWith(dest, passHeaders);
             expect(forward).toHaveBeenCalledTimes(1);
+            expect(setReject).not.toHaveBeenCalled();
         });
     });
 
-    describe('One destination, one unverified', () => {
+    describe('One destination, one unrecoverable error', () => {
         const environment = {
             ...TEST,
             USERS: 'user1',
             DESTINATION: 'user1@email.com',
         };
+
         it.each([
             ['user1@domain.com',
-                environment.DESTINATION.removeWhitespace().split(',')[0],
-                unverifiedDestinationErrorMessage,
+                r.dest1,
+                unrecoverableForwardImplementationErrorMessage,
                 environment.REJECT_TREATMENT
             ],
-        ])('%s forwards to %s, catches \'%s\', direct rejects \'%s\'', async (to, dest1, error1Message, reason) => {
+        ])('%s (forwards to %s, catches \'%s\') => direct rejects \'%s\'', async (to, dest1, mockErrorMessage, reason) => {
             message.to = to;
             message.forward = vi.fn()
-                .mockRejectedValue(new Error(error1Message));
+                .mockRejectedValue(new Error(mockErrorMessage));
             const forward = vi.spyOn(message, 'forward');
             await worker.email(message, environment, context);
-            expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
+            expect(forward).toHaveBeenCalledWith(dest1, passHeaders);
             expect(forward).toHaveBeenCalledTimes(1);
-            expect(reject).toHaveBeenCalledWith(reason);
-            expect(reject).toHaveBeenCalledTimes(1);
+            expect(setReject).toHaveBeenCalledWith(reason);
+            expect(setReject).toHaveBeenCalledTimes(1);
         });
     });
 
-    describe('One destination, reject destination unverified', () => {
+    describe('One destination, reject destination unrecoverable error', () => {
         const environment = {
             ...TEST,
-            USERS: 'user1',
-            DESTINATION: 'user1@email.com',
-            REJECT_TREATMENT: 'reject@email.com',
+            USERS: r.user1,
+            DESTINATION: r.dest1,
+            REJECT_TREATMENT: r.rejectDest1,
         };
+
         it.each([
             ['user2@domain.com',
-                environment.REJECT_TREATMENT.removeWhitespace(),
-                unverifiedDestinationErrorMessage,
+                r.rejectDest1,
+                unrecoverableForwardImplementationErrorMessage,
                 FIXED.prepend(DEFAULTS.REJECT_TREATMENT,
                     [{ test: FIXED.startsWithNonAlphanumericRegExp, prepend: 'user2' }]
                 )
             ],
-        ])('%s reject forwards to %s, catches \'%s\', direct rejects with fallback to default reason \'%s\'', async (to, dest1, error1Message, reason) => {
+        ])('%s (reject forwards to %s, catches \'%s\') => direct rejects with fallback to default reason \'%s\'', async (to, dest1, mockErrorMessage, reason) => {
             message.to = to;
             message.forward = vi.fn()
-                .mockRejectedValue(new Error(error1Message));
+                .mockRejectedValue(new Error(mockErrorMessage));
             const forward = vi.spyOn(message, 'forward');
             await worker.email(message, environment, context);
-            expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_FAIL }));
+            expect(forward).toHaveBeenCalledWith(dest1, failHeaders);
             expect(forward).toHaveBeenCalledTimes(1);
-            expect(reject).toHaveBeenCalledWith(reason);
-            expect(reject).toHaveBeenCalledTimes(1);
+            expect(setReject).toHaveBeenCalledWith(reason);
+            expect(setReject).toHaveBeenCalledTimes(1);
         });
     });
 
-    describe('Two destinations, one failure', () => {
+    describe('Two destinations, one or two recoverable errors', () => {
         const environment = {
             ...TEST,
-            USERS: 'user1',
-            DESTINATION: 'user1a@email.com, user1b@email.com',
+            USERS: r.user1,
+            DESTINATION: `${r.dest1a}, ${r.dest1b}`,
         };
+
         it.each([
             ['user1@domain.com',
-                environment.DESTINATION.removeWhitespace().split(',')[0],
-                serviceErrorMessage,
-                environment.DESTINATION.removeWhitespace().split(',')[1],
-                overallFailureErrorMessage,
+                r.dest1a,
+                recoverableForwardImplementationErrorMessage,
+                r.dest1b,
+                recoverableForwardInterfaceErrorMessage,
+                recoverableForwardInterfaceErrorRegExp,
             ],
-        ])('%s forwards to %s, catches \'%s\', forwards to %s, throws \'%s\'', async (to, dest1, error1Message, dest2, error2Message, error2RegExp) => {
+        ])('%s (forwards to %s, catches \'%s\')||(forwards to %s) => throws \'%s\'', async (to, dest1, mockErrorMessage, dest2, expectedErrorMessage, expectedErrorRegExp) => {
             message.to = to;
-            message.forward = vi.fn()
-                .mockRejectedValueOnce(new Error(error1Message))
-                .mockResolvedValueOnce();
+            message.forward = vi.fn((destination) => {
+                if (destination === dest1) throw new Error(mockErrorMessage);
+            });
             const forward = vi.spyOn(message, 'forward');
             await expect(() => worker.email(message, environment, context)).rejects
-                .toThrowError(error2RegExp);
-            expect(reject).not.toHaveBeenCalled();
-            expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
-            expect(forward).toHaveBeenCalledWith(dest2, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
+                .toThrowError(expectedErrorRegExp);
+            expect(forward).toHaveBeenCalledWith(dest1, passHeaders);
+            expect(forward).toHaveBeenCalledWith(dest2, passHeaders);
             expect(forward).toHaveBeenCalledTimes(2);
+            expect(setReject).not.toHaveBeenCalled();
         });
+
         it.each([
             ['user1@domain.com',
-                environment.DESTINATION.removeWhitespace().split(',')[0],
-                environment.DESTINATION.removeWhitespace().split(',')[1],
-                serviceErrorMessage,
-                overallFailureErrorMessage,
-                overallFailureErrorRegExp
+                r.dest1a,
+                r.dest1b,
+                recoverableForwardImplementationErrorMessage,
+                recoverableForwardInterfaceErrorMessage,
+                recoverableForwardInterfaceErrorRegExp,
             ],
-        ])('%s forwards to %s, forwards to %s, catches \'%s\', throws \'%s\'', async (to, dest1, dest2, error1Message, error2Message, error2RegExp) => {
+        ])('%s (forwards to %s)||(forwards to %s, catches \'%s\') => throws \'%s\'', async (to, dest1, dest2, mockErrorMessage, expectedErrorMessage, expectedErrorRegExp) => {
             message.to = to;
-            message.forward = vi.fn()
-                .mockResolvedValueOnce()
-                .mockRejectedValueOnce(new Error(error1Message));
+            message.forward = vi.fn((destination) => {
+                if (destination === dest2) throw new Error(mockErrorMessage);
+            });
             const forward = vi.spyOn(message, 'forward');
             await expect(() => worker.email(message, environment, context)).rejects
-                .toThrowError(error2RegExp);
-            expect(reject).not.toHaveBeenCalled();
-            expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
-            expect(forward).toHaveBeenCalledWith(dest2, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
+                .toThrowError(expectedErrorRegExp);
+            expect(forward).toHaveBeenCalledWith(dest1, passHeaders);
+            expect(forward).toHaveBeenCalledWith(dest2, passHeaders);
             expect(forward).toHaveBeenCalledTimes(2);
+            expect(setReject).not.toHaveBeenCalled();
+        });
+
+        it.each([
+            ['user1@domain.com',
+                r.dest1a,
+                recoverableForwardImplementationErrorMessage,
+                r.dest1b,
+                recoverableForwardInterfaceErrorMessage,
+                recoverableForwardInterfaceErrorRegExp,
+            ],
+        ])('%s (forwards to %s, catches \'%s\')||(forwards to %s, catches same) => throws \'%s\'', async (to, dest1, mockErrorMessage, dest2, expectedErrorMessage, expectedErrorRegExp) => {
+            message.to = to;
+            message.forward = vi.fn()
+                .mockRejectedValue(new Error(mockErrorMessage));
+            const forward = vi.spyOn(message, 'forward');
+            await expect(() => worker.email(message, environment, context)).rejects
+                .toThrowError(expectedErrorRegExp);
+            expect(forward).toHaveBeenCalledWith(dest1, passHeaders);
+            expect(forward).toHaveBeenCalledWith(dest2, passHeaders);
+            expect(forward).toHaveBeenCalledTimes(2);
+            expect(setReject).not.toHaveBeenCalled();
         });
     });
 
-    describe('Two destinations, one unverified, one failure', () => {
+    describe('Two destinations, one or two unrecoverable errors', () => {
         const environment = {
             ...TEST,
-            USERS: 'user1',
-            DESTINATION: 'user1a@email.com, user1b@email.com',
+            USERS: r.user1,
+            DESTINATION: `${r.dest1a}, ${r.dest1b}`,
         };
-        it.each([
-            ['user1@domain.com',
-                environment.DESTINATION.removeWhitespace().split(',')[0],
-                unverifiedDestinationErrorMessage,
-                environment.DESTINATION.removeWhitespace().split(',')[1],
-                serviceErrorMessage,
-                overallFailureErrorRegExp,
-            ],
-        ])('%s forwards to %s, catches \'%s\', forwards to %s, catches \'%s\', throws \'%s\'', async (to, dest1, error1Message, dest2, error2Message, error3RegExp) => {
-            message.to = to;
-            message.forward = vi.fn()
-                .mockRejectedValueOnce(new Error(error1Message))
-                .mockRejectedValueOnce(new Error(error2Message));
-            const forward = vi.spyOn(message, 'forward');
-            await expect(() => worker.email(message, environment, context)).rejects
-                .toThrowError(error3RegExp);
-            expect(reject).not.toHaveBeenCalled();
-            expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
-            expect(forward).toHaveBeenCalledWith(dest2, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
-            expect(forward).toHaveBeenCalledTimes(2);
-        });
 
         it.each([
             ['user1@domain.com',
-                environment.DESTINATION.removeWhitespace().split(',')[0],
-                serviceErrorMessage,
-                environment.DESTINATION.removeWhitespace().split(',')[1],
-                unverifiedDestinationErrorMessage,
-                overallFailureErrorRegExp,
+                r.dest1a,
+                unrecoverableForwardImplementationErrorMessage,
+                r.dest1b,
+                environment.REJECT_TREATMENT,
             ],
-        ])('%s forwards to %s, catches \'%s\', forwards to %s, catches \'%s\', throws \'%s\'', async (to, dest1, error1Message, dest2, error2Message, error3RegExp) => {
+        ])('%s (forwards to %s, catches \'%s\')||(forwards to %s) => direct rejects \'%s\'', async (to, dest1, mockErrorMessage, dest2, reason) => {
             message.to = to;
-            message.forward = vi.fn()
-                .mockRejectedValueOnce(new Error(error1Message))
-                .mockRejectedValueOnce(new Error(error2Message));
-            const forward = vi.spyOn(message, 'forward');
-            await expect(() => worker.email(message, environment, context)).rejects
-                .toThrowError(error3RegExp);
-            expect(reject).not.toHaveBeenCalled();
-            expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
-            expect(forward).toHaveBeenCalledWith(dest2, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
-            expect(forward).toHaveBeenCalledTimes(2);
-        });
-    });
-
-    describe('Two destinations, one unverified', () => {
-        const environment = {
-            ...TEST,
-            USERS: 'user1',
-            DESTINATION: 'user1a@email.com, user1b@email.com',
-        };
-        it.each([
-            ['user1@domain.com',
-                environment.DESTINATION.removeWhitespace().split(',')[0],
-                unverifiedDestinationErrorMessage,
-                environment.DESTINATION.removeWhitespace().split(',')[1],
-            ],
-        ])('%s forwards to %s, catches \'%s\', forwards to %s, no rethrow', async (to, dest1, error1Message, dest2) => {
-            message.to = to;
-            message.forward = vi.fn()
-                .mockRejectedValueOnce(new Error(error1Message))
-                .mockResolvedValueOnce();
+            message.forward = vi.fn((destination) => {
+                if (destination === dest1) throw new Error(mockErrorMessage);
+            });
             const forward = vi.spyOn(message, 'forward');
             await worker.email(message, environment, context);
-            expect(reject).not.toHaveBeenCalled();
-            expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
-            expect(forward).toHaveBeenCalledWith(dest2, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
+            expect(forward).toHaveBeenCalledWith(dest1, passHeaders);
+            expect(forward).toHaveBeenCalledWith(dest2, passHeaders);
             expect(forward).toHaveBeenCalledTimes(2);
+            expect(setReject).toHaveBeenCalledWith(reason);
+            expect(setReject).toHaveBeenCalledTimes(1);
         });
 
         it.each([
             ['user1@domain.com',
-                environment.DESTINATION.removeWhitespace().split(',')[0],
-                environment.DESTINATION.removeWhitespace().split(',')[1],
-                unverifiedDestinationErrorMessage,
+                r.dest1a,
+                r.dest1b,
+                unrecoverableForwardImplementationErrorMessage,
+                environment.REJECT_TREATMENT,
             ],
-        ])('%s forwards to %s, forwards to %s, catches \'%s\', no rethrow', async (to, dest1, dest2, error2Message) => {
+        ])('%s (forwards to %s)||(forwards to %s, catches \'%s\') => direct rejects \'%s\'', async (to, dest1, dest2, mockErrorMessage, reason) => {
             message.to = to;
-            message.forward = vi.fn()
-                .mockResolvedValueOnce()
-                .mockRejectedValueOnce(new Error(error2Message));
+            message.forward = vi.fn((destination) => {
+                if (destination === dest2) throw new Error(mockErrorMessage);
+            });
             const forward = vi.spyOn(message, 'forward');
             await worker.email(message, environment, context);
-            expect(reject).not.toHaveBeenCalled();
-            expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
-            expect(forward).toHaveBeenCalledWith(dest2, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
+            expect(forward).toHaveBeenCalledWith(dest1, passHeaders);
+            expect(forward).toHaveBeenCalledWith(dest2, passHeaders);
             expect(forward).toHaveBeenCalledTimes(2);
+            expect(setReject).toHaveBeenCalledWith(reason);
+            expect(setReject).toHaveBeenCalledTimes(1);
         });
-    });
 
-    describe('Two destinations, both unverified, or failures', () => {
-        const environment = {
-            ...TEST,
-            USERS: 'user1',
-            DESTINATION: 'user1a@email.com, user1b@email.com',
-        };
         it.each([
             ['user1@domain.com',
-                environment.DESTINATION.removeWhitespace().split(',')[0],
-                unverifiedDestinationErrorMessage,
-                environment.DESTINATION.removeWhitespace().split(',')[1],
+                r.dest1a,
+                unrecoverableForwardImplementationErrorMessage,
+                r.dest1b,
                 environment.REJECT_TREATMENT
             ],
-        ])('%s forwards to %s, catches \'%s\', forwards to %s, catches same, direct rejects \'%s\'', async (to, dest1, error1Message, dest2, reason) => {
+        ])('%s (forwards to %s, catches \'%s\')||(forwards to %s, catches same) => direct rejects \'%s\'', async (to, dest1, mockErrorMessage, dest2, reason) => {
             message.to = to;
             message.forward = vi.fn()
-                .mockRejectedValueOnce(new Error(error1Message))
-                .mockRejectedValueOnce(new Error(error1Message));
+                .mockRejectedValue(new Error(mockErrorMessage));
             const forward = vi.spyOn(message, 'forward');
             await worker.email(message, environment, context);
-            expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
-            expect(forward).toHaveBeenCalledWith(dest2, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
+            expect(forward).toHaveBeenCalledWith(dest1, passHeaders);
+            expect(forward).toHaveBeenCalledWith(dest2, passHeaders);
             expect(forward).toHaveBeenCalledTimes(2);
-            expect(reject).toHaveBeenCalledWith(reason);
-            expect(reject).toHaveBeenCalledTimes(1);
+            expect(setReject).toHaveBeenCalledWith(reason);
+            expect(setReject).toHaveBeenCalledTimes(1);
         });
+    });
+
+    describe('Two destinations, one unrecoverable, one recoverable error', () => {
+        const environment = {
+            ...TEST,
+            USERS: r.user1,
+            DESTINATION: `${r.dest1a}, ${r.dest1b}`,
+        };
 
         it.each([
             ['user1@domain.com',
-                environment.DESTINATION.removeWhitespace().split(',')[0],
-                serviceErrorMessage,
-                environment.DESTINATION.removeWhitespace().split(',')[1],
-                serviceErrorMessage,
-                overallFailureErrorMessage,
-                overallFailureErrorRegExp,
+                r.dest1a,
+                unrecoverableForwardImplementationErrorMessage,
+                r.dest1b,
+                recoverableForwardImplementationErrorMessage,
+                environment.REJECT_TREATMENT,
             ],
-        ])('%s forwards to %s, catches \'%s\', forwards to %s, catches same, throws \'%s\'', async (to, dest1, error1Message, dest2, error3Message, error3RegExp) => {
+            ['user1@domain.com',
+                r.dest1a,
+                recoverableForwardImplementationErrorMessage,
+                r.dest1b,
+                unrecoverableForwardImplementationErrorMessage,
+                environment.REJECT_TREATMENT,
+            ],
+        ])('%s (forwards to %s, catches \'%s\')||(forwards to %s, catches \'%s\') => direct rejects \'%s\'', async (to, dest1, mockError1Message, dest2, mockError2Message, reason) => {
             message.to = to;
-            message.forward = vi.fn()
-                .mockRejectedValueOnce(new Error(error1Message))
-                .mockRejectedValueOnce(new Error(error1Message));
+            message.forward = vi.fn((destination) => {
+                if (destination === dest1) throw new Error(mockError1Message);
+                if (destination === dest2) throw new Error(mockError2Message);
+            });
             const forward = vi.spyOn(message, 'forward');
-            await expect(() => worker.email(message, environment, context)).rejects
-                .toThrowError(error3RegExp);
-            expect(reject).not.toHaveBeenCalled();
-            expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
-            expect(forward).toHaveBeenCalledWith(dest2, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
+            await worker.email(message, environment, context);
+            expect(forward).toHaveBeenCalledWith(dest1, passHeaders);
+            expect(forward).toHaveBeenCalledWith(dest2, passHeaders);
             expect(forward).toHaveBeenCalledTimes(2);
+            expect(setReject).toHaveBeenCalledWith(reason);
+            expect(setReject).toHaveBeenCalledTimes(1);
         });
     });
 });

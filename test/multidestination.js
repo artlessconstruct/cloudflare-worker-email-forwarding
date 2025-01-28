@@ -4,16 +4,15 @@ import escape from 'regexp.escape';
 // Specifing the file allows vitest to detect changes in the source files in watch mode:
 import worker, { FIXED, DEFAULTS } from "./worker.js";
 
-// Normal conditions:
+// Normal conditions with multiple destinations where:
 // - message.forward mock doesn't throw any exceptions
-// - this implies that no validly formatted destinations are unverified
-// - avoiding pathological conditions
+// - nothing pathological
 //  
 describe('Email forwarding: multidestination', () => {
     const context = {};
     const TEST = {
         ...DEFAULTS,
-        REJECT_TREATMENT: "Invalid recipient"
+        REJECT_TREATMENT: 'default reject reason'
     };
     const message = {
         from: 'random@internet.com',
@@ -33,7 +32,7 @@ describe('Email forwarding: multidestination', () => {
         rawSize: null,
     };
     const forward = vi.spyOn(message, 'forward');
-    const reject = vi.spyOn(message, 'setReject');
+    const setReject = vi.spyOn(message, 'setReject');
 
     beforeEach(async () => {
         message.to = null;
@@ -44,40 +43,84 @@ describe('Email forwarding: multidestination', () => {
         vi.resetAllMocks();
     });
 
+    const failHeaders = new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_FAIL });
+    const passHeaders = new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS });
+
+    // Reference test data
+    const r = {
+        user1: 'user1',
+        dest1a: 'user1a@email.com',
+        dest1b: 'user1b@email.com',
+        rejectDest1a: 'user1+spam1a@email.com',
+        rejectDest1b: 'user1+spam1b@email.com',
+    };
+
+    describe('Destination validation', () => {
+        const MAP = new Map();
+        MAP.set('@SUBADDRESSES', 'subA');
+        MAP.set('@REJECT_TREATMENT', r.rejectReason);
+        MAP.set(r.user1,
+            `,${r.dest1a} , userbeforespace @domain, missingdomain, , missing domain, ${r.dest1b},  ${r.dest1a};`
+            + `,${r.rejectDest1a} , userbeforespace @domain, missingdomain, , missing domain, ${r.rejectDest1b},  ${r.rejectDest1a}`
+        );
+        const environment = { ...TEST, MAP };
+        it.each([
+            ['user1+subA@domain.com', r.dest1a, r.dest1b,],
+        ])('%s should forward to %s and %s', async (to, dest1, dest2) => {
+            message.to = to;
+            await worker.email(message, environment, context);
+            expect(forward).toHaveBeenCalledWith(dest1, passHeaders);
+            expect(forward).toHaveBeenCalledWith(dest2, passHeaders);
+            expect(forward).toHaveBeenCalledTimes(2);
+            expect(setReject).not.toHaveBeenCalled();
+        });
+
+        it.each([
+            ['user1+subB@domain.com', r.rejectDest1a, r.rejectDest1b,],
+        ])('%s should reject forward to %s and %s', async (to, dest1, dest2) => {
+            message.to = to;
+            await worker.email(message, environment, context);
+            expect(forward).toHaveBeenCalledWith(dest1, failHeaders);
+            expect(forward).toHaveBeenCalledWith(dest2, failHeaders);
+            expect(forward).toHaveBeenCalledTimes(2);
+            expect(setReject).not.toHaveBeenCalled();
+        });
+    });
+
     describe('KV multiple destinations', () => {
         const MAP = new Map();
         MAP.set('@SUBADDRESSES', 'subA');
         MAP.set('@REJECT_TREATMENT', 'No such recipient');
-        MAP.set('user1', 'user1a@email.com, user1b@email.com; '
-            + 'user1+spam1@email.com, user1+spam2@email.com');
+        MAP.set('user1', `${r.dest1a}, ${r.dest1b}; `
+            + `${r.rejectDest1a}, ${r.rejectDest1b}`);
         const environment = { ...TEST, MAP };
 
         it.each([
             ['user1+subA@domain.com',
-                MAP.get('user1').split(';')[0].removeWhitespace().split(',')[0],
-                MAP.get('user1').split(';')[0].removeWhitespace().split(',')[1]
+                r.dest1a,
+                r.dest1b,
             ],
-        ])('%s should forward to %s and %s', async (to, dest1, dest2) => {
+        ])('%s (forwards to %s)||(forwards to %s)', async (to, dest1, dest2) => {
             message.to = to;
             await worker.email(message, environment, context);
-            expect(reject).not.toHaveBeenCalled();
-            expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
-            expect(forward).toHaveBeenCalledWith(dest2, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_PASS }));
+            expect(forward).toHaveBeenCalledWith(dest1, passHeaders);
+            expect(forward).toHaveBeenCalledWith(dest2, passHeaders);
             expect(forward).toHaveBeenCalledTimes(2);
+            expect(setReject).not.toHaveBeenCalled();
         });
 
         it.each([
             ['user1+subB@domain.com',
-                MAP.get('user1').split(';')[1].split(',')[0].removeWhitespace(),
-                MAP.get('user1').split(';')[1].split(',')[1].removeWhitespace()
+                r.rejectDest1a,
+                r.rejectDest1b,
             ],
-        ])('%s should reject forward to %s and %s', async (to, dest1, dest2) => {
+        ])('%s (reject forwards to %s)||(reject forwards to %s)', async (to, dest1, dest2) => {
             message.to = to;
             await worker.email(message, environment, context);
-            expect(reject).not.toHaveBeenCalled();
-            expect(forward).toHaveBeenCalledWith(dest1, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_FAIL }));
-            expect(forward).toHaveBeenCalledWith(dest2, new Headers({ [TEST.CUSTOM_HEADER]: TEST.CUSTOM_HEADER_FAIL }));
+            expect(forward).toHaveBeenCalledWith(dest1, failHeaders);
+            expect(forward).toHaveBeenCalledWith(dest2, failHeaders);
             expect(forward).toHaveBeenCalledTimes(2);
+            expect(setReject).not.toHaveBeenCalled();
         });
     });
 });

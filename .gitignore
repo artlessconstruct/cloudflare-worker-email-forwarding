@@ -1,9 +1,8 @@
+.dev.vars
 .env
 .envrc
-.npmrc
-.nvmrc
 .vscode
 .wrangler
 node_modules
-settings.json
 wrangler.toml
+wrangler.dev.toml
