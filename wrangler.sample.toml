@@ -3,10 +3,8 @@ main = "worker.js"
 
 compatibility_date = "2024-08-21"
 compatibility_flags = [ "nodejs_compat" ]
-
 no_bundle = true
 workers_dev = true
-
 send_metrics = true
 
 [observability]
@@ -25,10 +23,10 @@ REJECT_TREATMENT = ": Invalid recipient"
 SUBADDRESSES = "*"
 USERS = ""
 # Error message configuration
-UNVERIFIED_DESTINATION_ERROR_MESSAGE = "destination address not verified"
+RECOVERABLE_FORWARD_IMPLEMENTATION_ERROR_REGEXP = "(^could not send email: Unknown error: transient error)"
 # Format configuration
-FORMAT_ADDRESS_SEPARATOR = ","
-FORMAT_FAILOVER_SEPARATOR = ":"
+FORMAT_REDUNDANT_ADDRESS_SEPARATOR = ","
+FORMAT_SIMPLE_ADDRESS_SEPARATOR = ":"
 FORMAT_LOCAL_PART_SEPARATOR = "+"
 FORMAT_REJECT_SEPARATOR = ";"
 FORMAT_VALID_CUSTOM_HEADER_REGEXP = "X-.*"

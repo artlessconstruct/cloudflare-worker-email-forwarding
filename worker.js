@@ -1,8 +1,9 @@
 /**
- * A Cloudflare Email Worker which can be configured with routes to forward 
- * from an address using subaddressing (o.k.a. subaddress extension [RFC 5233];
- * a.k.a. detailed addressing, plus addresses, tagged addresses, mail
- * extension, etc.) to one or more destination addresses
+ * A Cloudflare email worker providing configurable email forwarding with email
+ * subaddressing (a.k.a. subaddress extension, tagged addressing, plus
+ * addressing, etc.) support, including to multiple destinations simultaneously,
+ * where each such destination is a redundant list of simple addresses attempted
+ * sequentially until one succeeds.
  *
  * Copyright (C) 2024 Jeremy Harnois
  *
@@ -26,20 +27,17 @@
  */
 import escape from 'regexp.escape';
 
-// Global helper functions to increase readability
-//
-
-String.prototype.removeWhitespace = function () {
-    return this.replace(/\s+/g, '');
-};
-
 // Fixed configuration for helper functions and for testing
 
 export const FIXED = {
-    overallFailureErrorMessagePrefix: 'Forwarding overall failure',
+
+    // Implementation errors caught
+    RECOVERABLE_FORWARD_IMPLEMENTATION_ERROR_MESSAGE_1: 'could not send email: Unknown error: transient error',
+
+    // Interface error messages thrown
+    RECOVERABLE_FORWARD_INTERFACE_ERROR_MESSAGE: 'Recoverable Forward Failure',
 
     // Matches if starts with a non-alphanumeric
-
     startsWithNonAlphanumericRegExp: /^[^A-Z0-9]/i,
 
     // Prepends to the base with prepend if the regexp matches
@@ -57,21 +55,20 @@ export const FIXED = {
     }
 };
 
-class PrimaryDestinationResult {
-    constructor(successful, successfulDestination, unverifiedDestinationsCount, unverifiedDestinations, errorMessages, errors) {
-        this.successful = successful;
+class RedundantDestinationResult {
+    constructor(wasSuccessful, hadRecoverableError, successfulDestination, errorMessages, errors) {
+        this.wasSuccessful = wasSuccessful;
+        this.hadRecoverableError = hadRecoverableError;
         this.successfulDestination = successfulDestination;
-        this.unverifiedDestinationsCount = unverifiedDestinationsCount;
-        this.unverifiedDestinations = unverifiedDestinations;
         this.errorMessages = errorMessages;
         this.errors = errors;
     }
 };
 
-class OverallFailureError extends Error {
-    constructor(errors, message) {
-        super(message);
-        this.name = 'OverallFailureError';
+class RecoverableForwardError extends Error {
+    constructor(errors) {
+        super(FIXED.RECOVERABLE_FORWARD_INTERFACE_ERROR_MESSAGE);
+        this.name = 'RecoverableForwardError';
         this.errors = errors;
     }
 };
@@ -110,7 +107,7 @@ export const DEFAULTS = {
     // - MUST not be '*' or '@'
     // - MUST not be any character used in a user, subaddress or destination
     //   domain
-    // RECOMMENDATION: The primary address, redundant address and reject separators SHOULD
+    // RECOMMENDATION: The multi address, redundant address and reject separators SHOULD
     // - be either 
     //     - a space ' ', OR
     //     - one of the special characters '"(),:;<>[\]'
@@ -120,8 +117,8 @@ export const DEFAULTS = {
     // add complexity and as they are used infrequently not many systems support
     // them in any case.
     //
-    FORMAT_PRIMARY_ADDRESS_SEPARATOR: ",",
-    FORMAT_REDUNDANT_ADDRESS_SEPARATOR: ":",
+    FORMAT_REDUNDANT_ADDRESS_SEPARATOR: ",",
+    FORMAT_SIMPLE_ADDRESS_SEPARATOR: ":",
     FORMAT_LOCAL_PART_SEPARATOR: "+",
     FORMAT_REJECT_SEPARATOR: ";",
     FORMAT_VALID_CUSTOM_HEADER_REGEXP: "X-.*",
@@ -136,7 +133,7 @@ export const DEFAULTS = {
 
     // Error message configuration
     //
-    UNVERIFIED_DESTINATION_ERROR_MESSAGE: "destination address not verified",
+    RECOVERABLE_FORWARD_IMPLEMENTATION_ERROR_REGEXP: `(^${escape(FIXED.RECOVERABLE_FORWARD_IMPLEMENTATION_ERROR_MESSAGE_1)})`,
 
     // Cloudflare KV key-value store
     MAP: new Map(),
@@ -171,107 +168,119 @@ export const DEFAULTS = {
         if (configuration.consoleLogEnabled)
             console.log(message);
     },
-    // Forward to a primaryDestination by attempting to forward to
-    // each redundantDestination sequentially, stopping when the first forward succeeds. 
-    // Exceptions caught for unverified destinations will not trigger any
-    // exception to be propagated but may cause a message to be rejected if all
-    // other verified destinations fail (or there are none).
-    // Treating an unverified destination as a failure and throwing an
-    // exception leads to the message sender repeatedly resending the message
-    // which serves no purpose as until the destination is verified forwarding
-    // will always fail.
-    // Returns a PrimaryDestinationResult summarising all attempts.
-    async forwardPrimaryDestination(
-        message, primaryDestination, primaryDestinationId, customHeaders, emailImage, configuration) {
-        let unverifiedDestinationsCount = 0;
-        let unverifiedDestinations = [];
+    // Forward to a redundantDestination by attempting to forward to
+    // each included simpleDestination sequentially the forward is successful.
+    // Implementation exceptions are not propagated but aggregated as a 
+    // RedundantDestinationResult which aggregates the results of all forwards
+    // attempted.
+    async forwardToRedundantDestination(
+        message, redundantDestination, redundantDestinationId, customHeaders, emailImage, configuration) {
+        let s = 0;
+        let wasSuccessful = false;
+        let hadRecoverableError = false;
         let errorMessages = [];
         let errors = [];
-        let s = 0;
-        let successful = false;
-        for (const redundantDestination of primaryDestination) {
-            const redundantDestinationId = [primaryDestinationId, s + 1];
-            const log = (successful, errorMessage) => {
+        for (const simpleDestination of redundantDestination) {
+            const simpleDestinationId = s + 1;
+            const log = (wasSuccessful, errorMessage) => {
                 configuration.consoleLog({
                     email: emailImage,
                     action: 'RedundantForward',
                     redundantDestinationId: redundantDestinationId,
-                    redundantDestination: redundantDestination,
-                    successful: successful,
+                    simpleDestinationId: simpleDestinationId,
+                    simpleDestination: simpleDestination,
+                    wasSuccessful: wasSuccessful,
                     errorMessage: errorMessage,
                 }, configuration);
             };
             try {
-                await message.forward(redundantDestination, customHeaders);
-                successful = true;
-                log(successful, null);
+                await message.forward(simpleDestination, customHeaders);
+                wasSuccessful = true;
+                log(wasSuccessful, null);
                 break;
             }
             catch (error) {
-                if (error.message === configuration.UNVERIFIED_DESTINATION_ERROR_MESSAGE) {
-                    unverifiedDestinationsCount += 1;
-                    unverifiedDestinations.push(redundantDestinationId);
-                } else {
-                    errors.push(error);
-                    errorMessages.push({
-                        redundantDestinationId: redundantDestinationId,
-                        errorMessage: error.message
-                    });
+                log(wasSuccessful, error.message);
+                errorMessages.push({
+                    redundantDestinationId: redundantDestinationId,
+                    simpleDestinationId: simpleDestinationId,
+                    simpleDestination: simpleDestination,
+                    errorMessage: error.message
+                });
+                errors.push(error);
+                if (configuration.recoverableForwardImplementationErrorRegExp.test(error.message)) {
+                    hadRecoverableError = true;
                 }
-                log(successful, error.message);
             }
             s++;
         }
-        const primaryDestinationResult = new PrimaryDestinationResult(
-            successful || errors.length === 0,
-            successful ? primaryDestination.at(s) : null,
-            unverifiedDestinationsCount,
-            unverifiedDestinations,
+        return new RedundantDestinationResult(
+            wasSuccessful,
+            hadRecoverableError,
+            wasSuccessful ? redundantDestination.at(s) : null,
             errorMessages,
-            errors
+            errors,
         );
-        return primaryDestinationResult;
     },
-    // Concurrently forwards a message to zero or more destinations and returns the list
-    // of destinations that were successfully forwarded to.
-    // Throws if there is failure to forward to a verified destination but
-    // only after all destinations have been attempted.
-    // If the forwarding request is to only one destination then the same
-    // exception caught from message.forward will be rethrown,
-    // otherwise a new aggregate exception will be thrown including the error
-    // messages and errors of all failing verified destinations.
-    async forward(message, actionType, primaryDestinations, customHeaders, emailImage, configuration) {
-        const primaryDestinationResults = await Promise.all(
-            primaryDestinations.map((primaryDestination, primaryDestinationIndex) =>
-                configuration.forwardPrimaryDestination(
-                    message, primaryDestination,
-                    primaryDestinationIndex + 1,
+    // Forwards to a multiaddress which is an array of zero or more redundant
+    // destinations, by simultaneously fowarding to each redundant destination.
+    // Throws if one or more redundant destinations had a recoverable error
+    // and all other redundant destinations were successful.
+    // Otherwise returns whether forwarding to all redundant destinations was
+    // successful and there was at least one redundant destination.
+    // Errors caught when attempting to forward to a redundant destination are
+    // classified as either:
+    // - recoverable: a.k.a. "transient", "temporary" or "soft" errors,
+    //     which are often resolved after a period of time without any
+    //     intervention by an administrator.
+    // - unrecoverable: a.k.a. "permanent", "persistent" or "hard" errors,
+    //     which are likely to persist until an administrator intervenes and
+    //     rectifies the underlying fault.
+    // Throwing an exception causes an error email to be returned
+    // to the original sender, which usually will retry sending
+    // the email periodically until it is successfully delivered or a time limit
+    // or maximum number of retry attempts has been reached.
+    // In the case of a unrecoverable error this resending serves no purpose as
+    // the forward is likely to continue to fail until the underlying fault is
+    // rectified and for this reason no exception is thrown.
+    async forwardToMultiDestination(message, actionType, multiDestination, customHeaders, emailImage, configuration) {
+        const redundantDestinationResults = await Promise.all(
+            multiDestination.map((redundantDestination, redundantDestinationIndex) =>
+                configuration.forwardToRedundantDestination(
+                    message, redundantDestination,
+                    redundantDestinationIndex + 1,
                     customHeaders, emailImage, configuration)
             ));
-        const successful = primaryDestinationResults.map(
-            result => result.successful).every(Boolean);
-        const successfulDestinations = primaryDestinationResults
+        const wasSuccessful = multiDestination.length > 0
+            && redundantDestinationResults.map(
+                result => result.wasSuccessful).every(Boolean);
+        const allRedundantDestinationsWereSuccessfulOrHadARecoverableError
+            = multiDestination.length > 0
+            && redundantDestinationResults.map(
+                result => (result.wasSuccessful || result.hadRecoverableError)).every(Boolean);
+        const successfulDestinations = redundantDestinationResults
             .map(result => result.successfulDestination).filter(Boolean);
-        const errorMessages = primaryDestinationResults
+        const errorMessages = redundantDestinationResults
             .flatMap(result => result.errorMessages);
-        const errors = primaryDestinationResults
+        const errors = redundantDestinationResults
             .flatMap(result => result.errors);
+        let status = wasSuccessful
+            ? 'SuccessfulForwarding'
+            : (allRedundantDestinationsWereSuccessfulOrHadARecoverableError
+                ? 'RecoverableErrorForwarding'
+                : 'FailureForwarding');
         console.info({
             email: emailImage,
             action: actionType,
-            primaryDestinations: primaryDestinations,
-            successful: successful,
+            multiDestination: multiDestination,
+            status: status,
             successfulDestinations: successfulDestinations,
             errorMessages: errorMessages
         });
-        if (!successful) {
-            if (primaryDestinations.length === 1 && primaryDestinations[0].length === 1)
-                throw errors.at(0);
-            const errorMessage =
-                `${FIXED.overallFailureErrorMessagePrefix}: ${JSON.stringify(errorMessages)}`;
-            throw new OverallFailureError(errors, errorMessage);
+        if (!wasSuccessful && allRedundantDestinationsWereSuccessfulOrHadARecoverableError) {
+            throw new RecoverableForwardError(errors);
         }
-        return successfulDestinations;
+        return wasSuccessful;
     },
     isValidEmailAddress(address, validAddressRegExp) {
         return validAddressRegExp.test(address);
@@ -279,6 +288,7 @@ export const DEFAULTS = {
 };
 
 export default {
+    // Handle the forwarding of an email based on the message's `to` attribute. 
     async email(message, environment, context) {
         // Environment-based configuration which overrides `DEFAULTS`
         //
@@ -292,10 +302,10 @@ export default {
             SUBADDRESSES,
             USERS,
 
-            UNVERIFIED_DESTINATION_ERROR_MESSAGE,
+            RECOVERABLE_FORWARD_IMPLEMENTATION_ERROR_REGEXP,
 
-            FORMAT_PRIMARY_ADDRESS_SEPARATOR,
             FORMAT_REDUNDANT_ADDRESS_SEPARATOR,
+            FORMAT_SIMPLE_ADDRESS_SEPARATOR,
             FORMAT_LOCAL_PART_SEPARATOR,
             FORMAT_REJECT_SEPARATOR,
             FORMAT_VALID_CUSTOM_HEADER_REGEXP,
@@ -310,8 +320,8 @@ export default {
             addressLocalParts,
             emailImage,
             consoleLog,
-            forwardPrimaryDestination,
-            forward,
+            forwardToRedundantDestination,
+            forwardToMultiDestination,
             isValidEmailAddress
         } = { ...DEFAULTS, ...environment };
 
@@ -345,7 +355,7 @@ export default {
             await storedConfigurationValue(useStoredAddressGlobalConfiguration,
                 '@DESTINATION')
             ?? DESTINATION
-        ).removeWhitespace();
+        ).trim();
         const globalRejectTreatment = (
             await storedConfigurationValue(useStoredAddressGlobalConfiguration,
                 '@REJECT_TREATMENT')
@@ -355,17 +365,20 @@ export default {
             await storedConfigurationValue(useStoredAddressGlobalConfiguration,
                 '@SUBADDRESSES')
             ?? SUBADDRESSES
-        ).removeWhitespace().toLowerCase();
+        ).trim().toLowerCase();
         const globalUsers = (
             await storedConfigurationValue(useStoredAddressGlobalConfiguration,
                 '@USERS')
             ?? USERS
-        ).removeWhitespace().toLowerCase();
+        ).trim().toLowerCase();
+
+        const recoverableForwardImplementationErrorRegExp =
+            new RegExp(RECOVERABLE_FORWARD_IMPLEMENTATION_ERROR_REGEXP);
 
         const formatValidEmailAddressRegExp =
-            new RegExp(FORMAT_VALID_EMAIL_ADDRESS_REGEXP.trim());
+            new RegExp(FORMAT_VALID_EMAIL_ADDRESS_REGEXP);
         const formatValidCustomHeaderRegExp =
-            new RegExp(FORMAT_VALID_CUSTOM_HEADER_REGEXP.trim());
+            new RegExp(FORMAT_VALID_CUSTOM_HEADER_REGEXP);
 
         const customHeader =
             validateCustomHeader(CUSTOM_HEADER);
@@ -375,10 +388,10 @@ export default {
             CUSTOM_HEADER_PASS.trim();
 
         const CONFIGURATION = {
-            UNVERIFIED_DESTINATION_ERROR_MESSAGE: UNVERIFIED_DESTINATION_ERROR_MESSAGE,
+            recoverableForwardImplementationErrorRegExp: recoverableForwardImplementationErrorRegExp,
             consoleLogEnabled: consoleLogEnabled,
             consoleLog: consoleLog,
-            forwardPrimaryDestination: forwardPrimaryDestination
+            forwardToRedundantDestination: forwardToRedundantDestination,
         };
 
         // Derived constants
@@ -393,66 +406,66 @@ export default {
         //
 
         function validateCustomHeader(customHeader) {
-            const customHeaderNoWhitespace = customHeader.removeWhitespace();
-            if (formatValidCustomHeaderRegExp.test(customHeaderNoWhitespace))
-                return customHeaderNoWhitespace;
+            const customHeaderTrimmed = customHeader.trim();
+            if (formatValidCustomHeaderRegExp.test(customHeaderTrimmed))
+                return customHeaderTrimmed;
             else
-                throw (`Invalid custom header ${customHeaderNoWhitespace}`);
+                throw (`Invalid custom header ${customHeaderTrimmed}`);
         }
-        // Return an object with valid, invalid redundant addresses for a primary
+        // Return an object with valid and invalid simple addresses for a redundant
         // destination after
-        // - removing all whitespace
+        // - trimming whitespace
         // - prepend the message's user to the destination if it begins with
         //   either FORMAT_LOCAL_PART_SEPARATOR or '@'
-        function validatePrimaryDestination(primaryDestinationText) {
-            return primaryDestinationText.split(FORMAT_REDUNDANT_ADDRESS_SEPARATOR).reduce(
-                (newPrimaryDestination, destination) => {
-                    destination = FIXED.prepend(destination.removeWhitespace(),
+        function validateRedundantDestination(redundantDestinationText) {
+            return redundantDestinationText.split(FORMAT_SIMPLE_ADDRESS_SEPARATOR).reduce(
+                (newRedundantDestination, basicDestination) => {
+                    let simpleDestination = FIXED.prepend(basicDestination.trim(),
                         [{ test: FORMAT_LOCAL_PART_SEPARATOR, prepend: messageUser },
                         { test: '@', prepend: messageUser }]
                     );
-                    if (isValidEmailAddress(destination, formatValidEmailAddressRegExp)) {
-                        newPrimaryDestination.valid.push(destination);
-                    } else if (destination !== '') {
-                        newPrimaryDestination.invalid.push(destination);
+                    if (isValidEmailAddress(simpleDestination, formatValidEmailAddressRegExp)) {
+                        newRedundantDestination.validSimple.push(simpleDestination);
+                    } else if (simpleDestination !== '') {
+                        newRedundantDestination.invalidSimple.push(simpleDestination);
                     }
-                    return newPrimaryDestination;
+                    return newRedundantDestination;
                 },
-                { valid: [], invalid: [] }
+                { validSimple: [], invalidSimple: [] }
             );
         }
-        function validateDestination(destinationText) {
-            return destinationText.split(FORMAT_PRIMARY_ADDRESS_SEPARATOR).reduce(
-                (newPrimaryDestinations, primaryDestinationText) => {
-                    const nonDedupedprimaryDestination =
-                        validatePrimaryDestination(primaryDestinationText);
-                    const dedupedPrimaryDestination = nonDedupedprimaryDestination.valid.reduce(
-                        (newPrimaryDestination, destination) => {
-                            if (!newPrimaryDestinations.validOrdinary.includes(destination)) {
-                                newPrimaryDestinations.validOrdinary.push(destination);
-                                newPrimaryDestination.push(destination);
+        function validateMultiDestination(multiDestinationText) {
+            return multiDestinationText.split(FORMAT_REDUNDANT_ADDRESS_SEPARATOR).reduce(
+                (newMultiDestination, redundantDestinationText) => {
+                    const nonDedupedredundantDestination =
+                        validateRedundantDestination(redundantDestinationText);
+                    const dedupedRedundantDestination = nonDedupedredundantDestination.validSimple.reduce(
+                        (newRedundantDestination, destination) => {
+                            if (!newMultiDestination.validSimple.includes(destination)) {
+                                newMultiDestination.validSimple.push(destination);
+                                newRedundantDestination.push(destination);
                             } else {
-                                newPrimaryDestinations.duplicateOrdinary.push(destination);
+                                newMultiDestination.duplicateSimple.push(destination);
                             };
-                            return newPrimaryDestination;
+                            return newRedundantDestination;
                         }, []);
-                    if (dedupedPrimaryDestination.length > 0)
-                        newPrimaryDestinations.validPrimary.push(dedupedPrimaryDestination);
-                    newPrimaryDestinations.invalidOrdinary.concat(nonDedupedprimaryDestination.invalid);
-                    return newPrimaryDestinations;
+                    if (dedupedRedundantDestination.length > 0)
+                        newMultiDestination.validRedundant.push(dedupedRedundantDestination);
+                    newMultiDestination.invalidSimple.concat(nonDedupedredundantDestination.invalidSimple);
+                    return newMultiDestination;
                 },
-                { validPrimary: [], validOrdinary: [], invalidOrdinary: [], duplicateOrdinary: [] }
+                { validRedundant: [], validSimple: [], invalidSimple: [], duplicateSimple: [] }
             );
         }
-        function warnAboutBadDestinations(messageUser, validatedPrimaryDestinations, destinationType) {
+        function warnAboutBadDestinations(messageUser, validatedMultiDestination, destinationType) {
             [
                 {
                     description: 'invalidly formatted',
-                    destinations: validatedPrimaryDestinations.invalidOrdinary
+                    destinations: validatedMultiDestination.invalidSimple
                 },
                 {
                     description: 'duplicate',
-                    destinations: validatedPrimaryDestinations.duplicateOrdinary
+                    destinations: validatedMultiDestination.duplicateSimple
                 },
             ].map(issue => {
                 if (issue.destinations.length > 0)
@@ -464,11 +477,11 @@ export default {
                     });
             });
         }
-        function primaryDestinationsImage(validatedPrimaryDestinations) {
-            return validatedPrimaryDestinations.map(
-                primaryDestination =>
-                    primaryDestination.join(FORMAT_REDUNDANT_ADDRESS_SEPARATOR)
-            ).join(FORMAT_PRIMARY_ADDRESS_SEPARATOR);
+        function multiDestinationImage(validatedMultiDestination) {
+            return validatedMultiDestination.map(
+                redundantDestination =>
+                    redundantDestination.join(FORMAT_SIMPLE_ADDRESS_SEPARATOR)
+            ).join(FORMAT_REDUNDANT_ADDRESS_SEPARATOR);
         }
 
         // Given from RFC 5233 that the email address has the syntax:
@@ -492,7 +505,10 @@ export default {
         // operator will prevent this value from stored configuration from being
         // overriden as '' ?? x evaluates to ''
         const userSubaddresses =
-            (await storedConfigurationValue(useStoredUserConfiguration, `${messageUser}${FORMAT_LOCAL_PART_SEPARATOR}`))?.removeWhitespace().toLowerCase()
+            (await storedConfigurationValue(
+                useStoredUserConfiguration,
+                messageUser + FORMAT_LOCAL_PART_SEPARATOR))
+                ?.trim().toLowerCase()
             ?? globalSubaddresses;
         const userRequiresSubaddress = userSubaddresses.startsWith(FORMAT_LOCAL_PART_SEPARATOR);
         const userConcreteSubaddresses = userSubaddresses.replace(startsWithLocalPartSeparatorRegExp, '');
@@ -506,7 +522,7 @@ export default {
         // and so '' || x evaluates to x 
         //
         const userDestination =
-            userDestinationWithRejectTreatment?.split(FORMAT_REJECT_SEPARATOR).at(0).removeWhitespace()
+            userDestinationWithRejectTreatment?.split(FORMAT_REJECT_SEPARATOR).at(0).trim()
             || globalDestination;
         const userRejectTreatment =
             userDestinationWithRejectTreatment?.split(FORMAT_REJECT_SEPARATOR).at(1)?.trim()
@@ -519,7 +535,8 @@ export default {
         const messageUserIsAllowed =
             userDestinationWithRejectTreatment !== undefined
             || globalUsers === '*'
-            || globalUsers.split(FORMAT_PRIMARY_ADDRESS_SEPARATOR).includes(messageUser);
+            || globalUsers.split(FORMAT_REDUNDANT_ADDRESS_SEPARATOR)
+                .map(s => s.trim()).includes(messageUser);
         // The subaddress is allowed if:
         // - the message user either
         //     - has no subaddress and users do not require one, or
@@ -529,52 +546,52 @@ export default {
             messageSubaddress === ''
                 ? !userRequiresSubaddress
                 : userConcreteSubaddresses === '*'
-                || userConcreteSubaddresses
-                    .split(FORMAT_PRIMARY_ADDRESS_SEPARATOR).includes(messageSubaddress);
+                || userConcreteSubaddresses.split(FORMAT_REDUNDANT_ADDRESS_SEPARATOR)
+                    .map(s => s.trim()).includes(messageSubaddress);
 
         // Accept forward if the the message user and subaddress are allowed
         let acceptForwardWasSuccessful = false;
         if (messageUserIsAllowed && messageSubaddressIsAllowed) {
-            const acceptPrimaryDestinations =
-                validateDestination(userDestination);
-            warnAboutBadDestinations(messageUser, acceptPrimaryDestinations, 'AcceptForward');
+            const acceptMultiDestination =
+                validateMultiDestination(userDestination);
+            warnAboutBadDestinations(messageUser, acceptMultiDestination, 'AcceptForward');
             consoleLog({
                 email: theEmailImage,
                 action: 'AcceptForwarding',
-                destinations: acceptPrimaryDestinations.validPrimary,
+                destinations: acceptMultiDestination.validRedundant,
             }, CONFIGURATION);
             // Forward with custom header set to customHeaderPass
-            acceptForwardWasSuccessful = (
-                await forward(
+            acceptForwardWasSuccessful =
+                await forwardToMultiDestination(
                     message,
                     'AcceptForwarding',
-                    acceptPrimaryDestinations.validPrimary,
+                    acceptMultiDestination.validRedundant,
                     new Headers({ [customHeader]: customHeaderPass }),
                     theEmailImage,
                     CONFIGURATION
-                )).length > 0;
+                );
         }
 
-        // If no accept forwards succeeded then reject forward
+        // If accept forward failed or none was attempted then reject forward
         if (!acceptForwardWasSuccessful) {
-            const rejectPrimaryDestinations =
-                validateDestination(userRejectTreatment);
+            const rejectMultiDestination =
+                validateMultiDestination(userRejectTreatment);
             let rejectForwardWasSuccessful = false;
             // Reject forward if there are some valid reject forward destinations
-            if (rejectPrimaryDestinations.validPrimary.length > 0) {
-                warnAboutBadDestinations(messageUser, rejectPrimaryDestinations, 'RejectForward');
+            if (rejectMultiDestination.validRedundant.length > 0) {
+                warnAboutBadDestinations(messageUser, rejectMultiDestination, 'RejectForward');
                 rejectForwardWasSuccessful =
-                    (await forward(
+                    await forwardToMultiDestination(
                         message,
                         'RejectForwarding',
-                        rejectPrimaryDestinations.validPrimary,
+                        rejectMultiDestination.validRedundant,
                         new Headers({ [customHeader]: customHeaderFail }),
                         theEmailImage,
                         CONFIGURATION
-                    )).length > 0;
+                    );
             }
 
-            // If no reject forwards succeeded or were attempted then direct reject
+            // If reject forward failed or none was attempted then direct reject
             if (!rejectForwardWasSuccessful) {
                 const userRejectReason =
                     !userRejectTreatment.includes('@') && userRejectTreatment
@@ -594,6 +611,30 @@ export default {
                     rejectReason: fullRejectReason,
                 });
             }
+        }
+    },
+    // Handle a HTTP request by just returning either a not found error
+    // response. Not strictly necessary but helps avoid polluting the
+    // email worker logs with the more frequent than one would hope
+    // "Handler does not export a fetch() function." error message.
+    // This appears to be caused by search crawlers attempting to index
+    // the domain of the email worker.
+    // Having these errors in the logs increases the chance of missing
+    // a far more important error relating to email forwarding as generated
+    // by the email() function.
+    async fetch(request, env, ctx) {
+        // Log the request URL and method
+        console.log({
+            method: request.method,
+            url: request.url,
+        });
+        // Check if the request method is GET
+        if (request.method === 'GET') {
+            // Return a 404 Not Found response
+            return new Response('Not Found', { status: 404 });
+        } else {
+            // Return a 405 Method Not Allowed response
+            return new Response('Method Not Allowed', { status: 405 });
         }
     }
 }
